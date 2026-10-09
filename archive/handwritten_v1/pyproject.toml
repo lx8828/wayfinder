@@ -1,0 +1,24 @@
+[project]
+name = "first-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "lx", email = "834659376@qq.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28.1",
+    "openai>=3.3.1",
+    "pydantic>=2.13.4",
+    "python-dotenv>=1.2.3",
+    "flask>=3.0.0",
+    "pyngrok>=7.1.0",
+]
+
+[project.scripts]
+first-agent = "first_agent:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"

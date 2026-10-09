@@ -1,0 +1,20 @@
+# 本目录是 v1 冻结快照，禁止提交任何密钥或本地数据
+
+# Secrets
+.env
+
+# Virtual environments
+.venv
+
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Local data / runtime artifacts
+*.db
+*.db.bak
+var/
