@@ -4,7 +4,7 @@
 - 仓库：`first-agent`（本文档位于 `docs/design.md`，随代码一同版本化）
 - 版本：v0.4
 - 日期：2026-10-10
-- 状态：Proposed（S0–S5 已实现，见 0.1）
+- 状态：Proposed（S0–S6a 已实现，见 0.1）
 - 术语：本文档版本为 v0.4；产品目标版本称 **v2**；旧手写实现称 **v1**（归入 `archive/handwritten_v1/`）
 - 目标：围绕 Agent 编排、原生工具调用、短期/长期记忆和离线评测，把项目二从功能 Demo 升级为可测试、可观测、可回归的 Agent Runtime
 
@@ -65,6 +65,10 @@
 | R7 | 新增 `core/db.py`（通用 SQLite 封装，**不含业务 schema**） | 同上 | 5 / 6 |
 | R8 | 规范 key 从 5 个补到 **6 个**（新增 `dietary_preference`）；迁移映射表补「饮食偏好」「用户偏好」 | 用**真实 v1 归档库**验证映射时发现：原表漏了 v1 实际存在的「饮食偏好」，且 category 写的是「偏好」而真实数据是「用户偏好」。不补会导致抽取阶段**静默丢弃**饮食偏好（比 v1 还退步） | 12.2 / 18.2 |
 | R9 | 记忆管线新增 `memory/migrate.py`（逻辑放包内），`scripts/migrate_memory_v1.py` 退化为薄 CLI | 迁移逻辑需要单元测试，脚本文件不适合被 import | 5 / 18.2 |
+| R10 | 新增 `runtime/slots.py`（`SlotExtractor`） | design 8.2 要求「提取本轮槽位」，8.3 的例子也是按槽位合并；5 节目录未列此文件 | 5 / 8.3 |
+| R11 | `ToolExecutor.execute(call, defaults=...)` 支持**会话级环境参数** | `get_calendar_events(user_id, ...)` 的 `user_id` 模型不可能知道；显式参数优先、defaults 兜底 | 11.2 / 8.2 |
+| R12 | `estimate_travel_time` 用**启发式实现**（`HeuristicTravelProvider`，距离 ÷ 速度） | 项目没有接实时路况 API；宁可给确定性实现并说明，也不假装有实时数据 | 11.5 |
+| R13 | 依赖失败的步骤**跳过**（`blocked_by_dependency`）而不是让整个 Plan 崩掉 | 一步失败就整体无回答，违背「失败可恢复」原则 | 8.3 |
 
 **实测发现（真实冒烟，S3–S4）**：DeepSeek 在带 `tool_calls` 的响应里**有时输出 `content`（Thought）、有时不输出**——同一模型对同类问题先后返回 `content=null` 与 `content="I'll check the current weather in Beijing for you."`。这确认了方案 A（Thought 可选）是唯一稳妥的选择。另注意 **Thought 语言不受输入语言约束**（中文输入得到英文 Thought），如需统一只能在 prompt 中显式要求。
 
@@ -238,20 +242,24 @@ src/first_agent/
 │   ├── memory.py          # ✅ MemoryCandidate / MemoryRelation / UserProfile
 │   └── session.py         # ✅ WorkingState / SessionSummary
 ├── providers/
-│   ├── base.py            # ✅ Provider 协议与异常体系
-│   ├── fake.py            # ✅ Fake provider（失败注入 / 空结果）
-│   └── weather.py         # ✅ QWeatherProvider（实况 + 3 天预报）
+│   ├── base.py            # ✅ Provider 协议与异常体系（含 DateTime / Travel）
+│   ├── fake.py            # ✅ Fake provider（失败注入 / 空结果；时间解析为规则式）
+│   ├── weather.py         # ✅ QWeatherProvider（实况 + 3 天预报）
+│   ├── datetime.py        # ✅ LlmDateTimeProvider（自然语言时间 → 具体日期）
+│   ├── travel.py          # ✅ HeuristicTravelProvider（启发式耗时，无实时路况）
+│   └── calendar.py        # ✅ LocalCalendarProvider（本地 JSON 日程）
 ├── tools/
 │   ├── registry.py        # ✅ 显式注册表
-│   ├── executor.py        # ✅ 校验 / 超时 / 重试 / 有界并发
+│   ├── executor.py        # ✅ 校验 / 超时 / 重试 / 有界并发 / 环境默认参数
 │   └── builtin/
-│       ├── time.py        # ✅ get_current_time
+│       ├── time.py        # ✅ get_current_time / resolve_datetime
 │       ├── weather.py     # ✅ get_weather
-│       ├── travel.py      # ⏳ S6
-│       └── calendar.py    # ⏳ S6
+│       ├── travel.py      # ✅ estimate_travel_time
+│       └── calendar.py    # ✅ get_calendar_events
 ├── runtime/
 │   ├── react.py           # ✅ ReActEngine
-│   └── plan_execute.py    # ⏳ S6
+│   ├── plan_execute.py    # ✅ PlanExecuteEngine + 计划校验 / 拓扑排序
+│   └── slots.py           # ✅ SlotExtractor（R10）
 ├── memory/
 │   ├── store.py           # ✅ MemoryStore（确定性动作裁决）
 │   ├── extractor.py       # ✅ 记忆抽取（LLM，别名规范化 + 逐条容错）
@@ -268,7 +276,7 @@ src/first_agent/
 │   └── baseline.json      # ⏳ S7
 └── main.py                # ✅ CLI（chat --mode react）
 
-tests/                     # ✅ 258 个离线测试（无 API Key 可跑）
+tests/                     # ✅ 331 个离线测试（无 API Key 可跑）
 var/                       # ✅ 本地 SQLite 与 Trace（已 gitignore）
 
 scripts/
@@ -526,6 +534,17 @@ class Plan(BaseModel):
 
 任一步不满足则拒绝该 Plan，进入重规划或追问。
 
+实现补充（S6a）：
+
+- `validate_plan` 在**执行前**完成上述三步 + 重复 id / 未知工具 / 依赖环 / 步数上限；
+  执行期 `resolve_arguments` 再做一次引用解析，作为安全网。
+- 执行顺序只由 `depends_on` 的拓扑排序决定，**与 steps 的书写顺序无关**
+  （属性测试 `test_list_order_does_not_affect_the_result` 钉住这一点）。
+- `ToolExecutor.execute(call, defaults=...)` 支持**会话级环境参数**（R11）：
+  显式参数优先，`defaults` 兜底，`user_id` 这类模型不可能知道的参数由此注入。
+- **依赖失败的步骤被跳过**（`blocked_by_dependency`）而非整体失败（R13）：
+  其余步骤照常执行与汇总，失败原因通过 Observation 交给汇总环节。
+
 ### 8.3 多轮追问
 
 Working State 由 SessionStore 持久化。
@@ -721,9 +740,9 @@ class CalendarResult(BaseModel):
 |---|---|---|---|---|
 | `get_current_time` | `timezone` | `TimeResult` | 单参数、确定性；时钟可注入 | ✅ S3 |
 | `get_weather` | `city, date?` | `WeatherResult` | 外部依赖（当天实况 / 未来 3 天预报），可失败 | ✅ S3 |
-| `resolve_datetime` | `expression, timezone` | `ResolvedTimeResult` | 处理“明天下午”，需要 LLM 解析 | ⏳ S6 |
-| `estimate_travel_time` | `origin, destination, mode` | `TravelTimeResult` | 多参数、可形成依赖 | ⏳ S6 |
-| `get_calendar_events` | `user_id, date` | `CalendarResult` | 本地数据、可离线测试 | ⏳ S6 |
+| `resolve_datetime` | `expression, timezone` | `ResolvedTimeResult` | 处理“明天下午”；**结果含 `date` 字段供 `$steps.<id>.date` 引用** | ✅ S6a |
+| `estimate_travel_time` | `origin, destination, mode` | `TravelTimeResult` | 多参数、可形成依赖；启发式实现（无实时路况） | ✅ S6a |
+| `get_calendar_events` | `user_id, date` | `CalendarResult` | 本地 JSON 数据；`user_id` 由会话**环境默认值**注入 | ✅ S6a |
 
 ### 11.6 地点解析
 
@@ -1118,8 +1137,16 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 | 导入顺序不产生循环导入 | `tests/test_import_order.py` | ✅ |
 | 引擎异常不炸整批评测 | `tests/test_evals_harness.py::test_run_case_turns_engine_crash_into_failure` | ✅ |
 | baseline 门禁按「指标恶化」判定 | `tests/test_evals_harness.py::test_compare_metrics_is_direction_aware` | ✅ |
-| Plan 依赖可拓扑排序 | `test_plan_topological_sort` | ⏳ S6a |
-| 引用必须声明 depends_on | `test_plan_reference_requires_dependency` | ⏳ S6a |
+| Plan 依赖可拓扑排序 | `tests/test_plan_validation.py::test_topological_order_is_dependency_first` | ✅ |
+| 引用必须声明 depends_on | `tests/test_plan_validation.py::test_reference_requires_depends_on` | ✅ |
+| 引用字段必须在 output_model 中 | `tests/test_plan_validation.py::test_reference_to_unknown_field_detected` | ✅ |
+| 依赖环被拒绝 | `tests/test_plan_validation.py::test_cycle_detected` | ✅ |
+| 步骤书写顺序不影响结果 | `tests/test_plan_engine.py::test_list_order_does_not_affect_the_result` | ✅ |
+| 依赖值被解析进参数 | `tests/test_plan_engine.py::test_dependency_chain_resolves_reference_values` | ✅ |
+| 多轮追问合并状态（Plan） | `tests/test_plan_engine.py::test_slots_merge_across_turns_without_resetting` | ✅ |
+| need_info 写入 pending_slots | `tests/test_plan_engine.py::test_plan_mode_persists_pending_slots_through_runtime` | ✅ |
+| 会话参数注入（user_id） | `tests/test_plan_engine.py::test_ambient_user_id_is_injected_into_tools` | ✅ |
+| 依赖失败只阻塞下游 | `tests/test_plan_engine.py::test_failed_dependency_blocks_only_dependent_steps` | ✅ |
 | 超预算可解释退出 | `test_run_budget_exceeded` | ⏳ S6b |
 | 跨会话记忆恢复 | `tests/test_memory_store.py` + `tests/test_runtime_engine.py` | ✅（评测用例样本待 S7 扩到 30～40 条） |
 
@@ -1195,7 +1222,7 @@ v2 只建立在 `first-agent/`。
 
 ## 19. 里程碑
 
-> 实现进度（截至本文档 v0.4）：**Phase 0 ✅ / Phase 1 🟡 / Phase 2 ✅ / Phase 3a ⏳ / Phase 3b ⏳ / Phase 4 🟡 / Phase 5 ⏳**
+> 实现进度（截至本文档 v0.4）：**Phase 0 ✅ / Phase 1 🟡 / Phase 2 ✅ / Phase 3a ✅ / Phase 3b ⏳ / Phase 4 🟡 / Phase 5 ⏳**
 >
 > 实际执行被拆成 S0～S8 若干小步，每步一个 commit + 一次全量测试。其中 **S2「护栏提前」** 把 Phase 4
 > 的测试骨架（ScriptedLLM / Fake provider / runner / metrics / 回归门禁）提前实现，理由：没有护栏
@@ -1206,7 +1233,7 @@ v2 只建立在 `first-agent/`。
 | Phase 0 归档与入口保护 | ✅ | S0（tag `v1-handwritten` + `archive/handwritten_v1/`） |
 | Phase 1 最小可运行 v2 | 🟡 | S1 契约层 + S3 ReAct；**README 骨架未做**，并入 Phase 5 |
 | Phase 2 工具与动态记忆 | ✅ | S3 工具执行器 + S4 SessionStore / 动态注入 / 确定性 add-update-keep + S5 LLM 抽取与关系裁决 |
-| Phase 3a Plan 结构与依赖 | ⏳ | S6a |
+| Phase 3a Plan 结构与依赖 | ✅ | S6a |
 | Phase 3b 失败恢复 | ⏳ | S6b |
 | Phase 4 评测与回归 | 🟡 | 护栏已提前到 S2；用例仅 5 条种子，`baseline.json` 与 CI 门禁待 S7 |
 | Phase 5 文档与可选优化 | ⏳ | S8（含 README 重写） |
@@ -1249,12 +1276,16 @@ uv run first-agent chat --mode react --user demo --session s1 "北京今天天�
 **已满足**：`test_new_memory_is_injected_on_the_next_turn` 通过；另用真实 API 两轮验证了
 历史回放（第二轮直接复用上一轮 Observation，未重复调用工具）。
 
-### Phase 3a ⏳：Plan 结构与依赖，1.2 天
+### Phase 3a ✅：Plan 结构与依赖，1.2 天
 
 - PlanStep、`depends_on`、引用校验（三步）和拓扑排序。
 - 多轮 `pending_slots`。
 
 退出条件：三工具依赖用例可以按拓扑序执行并写入 Trace。
+
+**已满足**：`test_seed_case_plan_001_passes_through_harness` 通过；另用真实 API 跑通
+「明天下午想去公园」，真实 DeepSeek 一次生成带 `$steps.0.date` 引用与正确 `depends_on`
+的合法计划，且 `reason` 中明确引用了迁移来的 `home_city`。
 
 ### Phase 3b ⏳：失败恢复，0.8 天
 
