@@ -66,7 +66,10 @@ class FakeWeatherProvider:
         if city in self.empty_cities:
             return {}
 
-        payload = self.responses.get(city, DEFAULT_WEATHER)
+        # 部分覆盖必须**合并**默认值：否则夹具只写 condition 时，
+        # humidity / feels_like_c 等缺失会让工具的 output_model 校验失败
+        # （表现为 invalid_output，而不是夹具写错）
+        payload = {**DEFAULT_WEATHER, **self.responses.get(city, {})}
         result = copy.deepcopy(dict(payload))
         result.setdefault("city", city)
         result.setdefault("date", date)

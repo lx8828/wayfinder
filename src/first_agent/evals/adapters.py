@@ -20,6 +20,30 @@ _SEED_CATEGORY = {
 }
 
 
+def _tool_errors(result: Any) -> list[dict[str, Any]]:
+    """执行失败的调用（含被依赖失败阻塞的步骤）。"""
+
+    return [
+        {
+            "tool": getattr(item, "tool_name", ""),
+            "error_code": getattr(item, "error_code", None),
+            "error_message": getattr(item, "error_message", None),
+        }
+        for item in (getattr(result, "tool_results", None) or [])
+        if not getattr(item, "ok", True)
+    ]
+
+
+def _observations(result: Any) -> list[dict[str, Any]]:
+    """成功调用的观测数据（供裁判核对回答是否与事实一致）。"""
+
+    return [
+        {"tool": getattr(item, "tool_name", ""), "data": getattr(item, "data", None)}
+        for item in (getattr(result, "tool_results", None) or [])
+        if getattr(item, "ok", False)
+    ]
+
+
 def to_run_outcome(result: Any) -> RunOutcome:
     """把 ``ReactResult``（或结构相同的对象）转成 ``RunOutcome``。"""
 
@@ -33,6 +57,8 @@ def to_run_outcome(result: Any) -> RunOutcome:
         latency_ms=int(getattr(result, "latency_ms", 0) or 0),
         status=getattr(result, "status", "success") or "success",
         error=getattr(result, "error", None),
+        tool_errors=_tool_errors(result),
+        observations=_observations(result),
     )
 
 
@@ -56,9 +82,10 @@ def runtime_engine(runtime: Any, *, seed_memory: bool = True) -> Any:
     """
 
     def run(case: Any) -> RunOutcome:
+        from first_agent.evals.case import eval_user_id
         from first_agent.schemas.memory import MemoryCandidate
 
-        user_id = f"case:{case.case_id}"
+        user_id = eval_user_id(case)
         if seed_memory:
             for key, value in (getattr(case, "initial_memory", None) or {}).items():
                 runtime.memories.apply_candidate(

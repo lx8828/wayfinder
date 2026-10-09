@@ -119,6 +119,16 @@ class MetricDelta:
         return self.degradation > 0
 
     @property
+    def within_tolerance(self) -> bool:
+        """恶化幅度在容差内（稳定 1pt / 波动 3pt）。
+
+        告警必须看容差：否则 0.01pt 的抖动也会报警，连续跑几次就会产生
+        「告警疲劳」，真恶化反而被忽略。
+        """
+
+        return abs(self.degradation) <= self.tolerance
+
+    @property
     def gate_failed(self) -> bool:
         """稳定指标恶化超过容差即硬门禁失败。"""
 

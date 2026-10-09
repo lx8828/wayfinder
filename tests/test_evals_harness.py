@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,7 @@ from first_agent.evals.case import (
     sequence_matches,
     set_matches,
 )
+from first_agent.evals.offline import offline_engine_factory
 from first_agent.providers import FakeWeatherProvider
 from first_agent.schemas.tool import ToolSpec
 from first_agent.tools.registry import ToolRegistry
@@ -42,18 +44,32 @@ from first_agent.tools.registry import ToolRegistry
 CASES_PATH = Path(evals_pkg.__file__).parent / "cases.jsonl"
 
 
+def _case(case_id: str) -> EvalCase:
+    cases = {case.case_id: case for case in load_cases(CASES_PATH)}
+    return cases[case_id]
+
+
 # -- 加载 ------------------------------------------------------------------
 
 
 def test_load_seed_cases():
     cases = load_cases(CASES_PATH)
-    assert len(cases) == 5
-    assert {case.case_id for case in cases} == {
-        "react_001",
-        "react_002",
-        "react_003",
-        "plan_001",
-        "memory_001",
+    assert len(cases) == 36
+    assert len({case.case_id for case in cases}) == 36
+
+
+def test_case_set_matches_design_distribution():
+    """用例分布必须与 design.md 16.1 的表格一致（36 条）。"""
+
+    counts = Counter(case.category for case in load_cases(CASES_PATH))
+    assert dict(counts) == {
+        "single_tool": 8,
+        "double_tool": 6,
+        "chain": 5,
+        "need_info": 4,
+        "failure": 4,
+        "memory": 6,
+        "no_tool": 3,
     }
 
 
@@ -317,42 +333,34 @@ def make_stub_engine(script, provider) -> object:
 
 
 def test_end_to_end_case_passes_without_api_key():
-    cases = {case.case_id: case for case in load_cases(CASES_PATH)}
-    engine = make_stub_engine(
-        [tool("get_weather", {"city": "北京"}, thought="先查天气"), text("北京今天晴，28°C")],
-        FakeWeatherProvider(),
-    )
+    """真实 Runtime（ReAct + 记忆 + 工具）在**无 API Key** 下跑通用例。"""
 
-    check = run_case(cases["react_001"], engine)
+    case = _case("react_single_weather_001")
+    check = run_case(case, offline_engine_factory(case))
 
     assert check.error is None
     assert check.outcome.tool_calls == ["get_weather"]
+    assert check.outcome.tool_errors == []
     assert check.passed is True
 
 
 def test_end_to_end_memory_case_uses_initial_memory():
-    cases = {case.case_id: case for case in load_cases(CASES_PATH)}
-    case = cases["react_002"]
-    provider = FakeWeatherProvider()
-    engine = make_stub_engine(
-        [
-            tool("get_weather", {"city": case.initial_memory["home_city"]}),
-            text("重庆今天多云"),
-        ],
-        provider,
-    )
+    """用例预置的记忆按**用例专属 user_id** 隔离，冲突时按裁决更新。"""
 
-    check = run_case(case, engine)
+    case = _case("memory_update_029")
+    check = run_case(case, offline_engine_factory(case))
 
+    assert check.outcome.memory_actions == {"home_city": "update"}
     assert check.passed is True
-    assert provider.calls == [("重庆", "2026-10-10")]
 
 
 def test_end_to_end_react_case_without_tools_expected():
-    cases = {case.case_id: case for case in load_cases(CASES_PATH)}
-    engine = make_stub_engine([text("你好！有什么可以帮你的？")], FakeWeatherProvider())
+    """护栏对**任意**引擎都成立：换掉引擎后同一个用例仍应通过。"""
 
-    check = run_case(cases["react_003"], engine)
+    cases = {case.case_id: case for case in load_cases(CASES_PATH)}
+    engine = make_stub_engine([text("1+1 等于 2。")], FakeWeatherProvider())
+
+    check = run_case(cases["no_tool_math_036"], engine)
 
     assert check.outcome.tool_calls == []
     assert check.passed is True

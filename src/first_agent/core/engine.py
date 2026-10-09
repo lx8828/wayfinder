@@ -114,7 +114,7 @@ class ToolAgentRuntime:
         result = engine.run_messages(
             messages,
             working_state=working_state,
-            defaults=self._engine_defaults(profile),
+            defaults=self._engine_defaults(profile, user_id=ref.user_id),
             budget=budget,
         )
 
@@ -160,11 +160,21 @@ class ToolAgentRuntime:
         return self.engine, selected
 
     @staticmethod
-    def _engine_defaults(profile: Any) -> dict[str, Any]:
-        """会话级环境参数：目前注入用户时区（工具里显式传参仍然优先）。"""
+    def _engine_defaults(profile: Any, *, user_id: str | None = None) -> dict[str, Any]:
+        """会话级环境参数：注入用户时区与 ``user_id``（工具里显式传参仍然优先）。
 
+        ``user_id`` 是**模型不可能知道**的参数（如 ``get_calendar_events`` 需要它），
+        必须由运行时注入。此前只在 Plan 模式注入，导致该工具在 ReAct 模式下
+        **永远无法成功调用**——这是 S7 评测用例暴露出来的缺陷。
+        """
+
+        defaults: dict[str, Any] = {}
         timezone = getattr(profile, "timezone", None)
-        return {"timezone": timezone} if timezone else {}
+        if timezone:
+            defaults["timezone"] = timezone
+        if user_id:
+            defaults["user_id"] = user_id
+        return defaults
 
     def _remember(
         self, user_input: str, user_id: str

@@ -203,7 +203,7 @@ def test_react_engine_passes_seed_case_through_harness():
         [tool("get_weather", {"city": "北京"}, thought="查天气"), text("北京今天晴，28°C")]
     )
 
-    check = run_case(cases["react_001"], react_engine(engine))
+    check = run_case(cases["react_single_weather_001"], react_engine(engine))
 
     assert check.passed is True
     assert check.outcome.tool_calls == ["get_weather"]
@@ -215,9 +215,9 @@ def test_react_engine_passes_no_tool_case_through_harness():
         case.case_id: case
         for case in load_cases(Path(evals_pkg.__file__).parent / "cases.jsonl")
     }
-    engine, _ = build_engine([text("你好！需要查天气或时间吗？")])
+    engine, _ = build_engine([text("你好！我是你的出行助手。")])
 
-    check = run_case(cases["react_003"], react_engine(engine))
+    check = run_case(cases["no_tool_greeting_034"], react_engine(engine))
 
     assert check.passed is True
     assert check.outcome.tool_calls == []

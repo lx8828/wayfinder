@@ -21,6 +21,9 @@ from pydantic import BaseModel, Field
 DEFAULT_GLOBAL_MAX_STEPS = 5
 HARD_MAX_STEPS = 8
 
+# 评测用例专属 user_id 前缀（design.md 16.4：用例之间必须隔离）
+EVAL_USER_PREFIX = "case:"
+
 
 class Assertion(BaseModel):
     """对最终答案的确定性断言（开放式答案另行使用 judge）。"""
@@ -30,10 +33,42 @@ class Assertion(BaseModel):
     value: str = ""
 
 
+class OfflineFixture(BaseModel):
+    """离线夹具：固定「一个称职的模型会怎么回答」（design.md 16.5）。
+
+    稳定指标只反映 **Runtime 行为**（计划执行、依赖解析、参数透传、记忆裁决、
+    失败降级），因此夹具必须完全确定；模型能力由真 LLM 段衡量。
+
+    缺省字段按 ``expected_*`` 推导，只有推导不出来的部分才需要显式声明。
+    """
+
+    # 引擎部分的显式脚本（整段替换推导）；用于降级/重规划等特殊路径
+    script: list[dict[str, Any]] | None = None
+    # plan 模式的计划与槽位
+    slots: dict[str, Any] = Field(default_factory=dict)
+    plan: dict[str, Any] | None = None
+    replan: dict[str, Any] | None = None
+    # 最终回答（缺省由断言值拼出，保证 contains 断言可满足）
+    final_answer: str = ""
+    # Fake provider 数据
+    weather: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    weather_failures: dict[str, str] = Field(default_factory=dict)
+    # calendar 与 calendar_failures 的键可用 "$user" 表示该用例专属 user_id
+    calendar: dict[str, dict[str, list[str]]] = Field(default_factory=dict)
+    calendar_failures: dict[str, str] = Field(default_factory=dict)
+    datetime_responses: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    travel_routes: dict[str, int] = Field(default_factory=dict)
+    # 后置记忆：抽取结果 + 按需追加的裁决结果
+    memory_extraction: dict[str, Any] | None = None
+    memory_relations: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class EvalCase(BaseModel):
     case_id: str
     mode: Literal["react", "plan"]
     input: str
+    # 用例类型（与 design.md 16.1 的分布表对照，便于按类型统计）
+    category: str = ""
     initial_memory: dict[str, str] = Field(default_factory=dict)
     expected_tool_set: list[str] = Field(default_factory=list)
     expected_tool_sequence: list[str] = Field(default_factory=list)
@@ -42,12 +77,22 @@ class EvalCase(BaseModel):
     expected_memory_delta: dict[str, str] = Field(default_factory=dict)
     max_steps: int | None = None
     expected_status: str | None = None
+    # 默认**不允许**任何工具执行出错；只有「工具失败与降级」类用例才置 true。
+    # 该判定独立于指标：否则工具全挂但工具集合/参数/答案都对时，指标会假装一切正常。
+    expect_tool_errors: bool = False
     assertions: list[Assertion] = Field(default_factory=list)
+    offline: OfflineFixture | None = None
 
     def expected_call_count(self) -> int:
         """期望的工具调用次数（用于计算多余调用）。"""
 
         return len(self.expected_tool_sequence) or len(self.expected_tool_set)
+
+
+def eval_user_id(case: EvalCase) -> str:
+    """该用例专属的 ``user_id``（design.md 16.4：用例之间不得共享记忆）。"""
+
+    return f"{EVAL_USER_PREFIX}{case.case_id}"
 
 
 def load_cases(path: str | Path) -> list[EvalCase]:
@@ -97,19 +142,28 @@ def set_matches(case: EvalCase, observed: list[str]) -> bool | None:
 
 
 def sequence_matches(case: EvalCase, observed: list[str]) -> bool | None:
-    """比较工具序列（仅 plan）；``allowed_topological_orders`` 优先。"""
+    """比较工具序列（仅 plan）；``allowed_topological_orders`` 优先。
+
+    与 :func:`set_matches` 口径一致：**显式声明**才判定，
+    ``"expected_tool_sequence": []`` 表示**不允许调用任何工具**。
+    """
 
     if case.mode != "plan":
         return None
     if case.allowed_topological_orders:
         return observed in [list(order) for order in case.allowed_topological_orders]
-    if case.expected_tool_sequence:
+    if "expected_tool_sequence" in case.model_fields_set:
         return observed == case.expected_tool_sequence
     return None
 
 
 def arguments_match(case: EvalCase, observed: dict[str, list[dict[str, Any]]]) -> bool | None:
-    """每个期望工具的期望参数，需在它的某一次调用中全部命中。"""
+    """每个期望工具的期望参数，需在它的某一次调用中全部命中。
+
+    只声明期望键即可（**超集也算命中**）：``user_id`` 这类由运行时注入的环境参数
+    不属于模型输出，不应写进期望里——它的正确性由 ``get_calendar_events``
+    类用例（夹具按用例专属 user_id 预置日程）间接验证。
+    """
 
     if not case.expected_arguments:
         return None

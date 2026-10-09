@@ -4,7 +4,7 @@
 - 仓库：`first-agent`（本文档位于 `docs/design.md`，随代码一同版本化）
 - 版本：v0.4
 - 日期：2026-10-10
-- 状态：Proposed（S0–S6b 已实现，见 0.1）
+- 状态：Proposed（S0–S7 已实现，见 0.1）
 - 术语：本文档版本为 v0.4；产品目标版本称 **v2**；旧手写实现称 **v1**（归入 `archive/handwritten_v1/`）
 - 目标：围绕 Agent 编排、原生工具调用、短期/长期记忆和离线评测，把项目二从功能 Demo 升级为可测试、可观测、可回归的 Agent Runtime
 
@@ -71,6 +71,9 @@
 | R13 | 依赖失败的步骤**跳过**（`blocked_by_dependency`）而不是让整个 Plan 崩掉 | 一步失败就整体无回答，违背「失败可恢复」原则 | 8.3 |
 | R14 | 预算由**门面**创建并贯穿整轮；熔断时补齐 `tool` 消息；降级成功时清空 `error`；预算耗尽跳过记忆写入 | 分别对应：引擎各自计时会漏算记忆开销 / 缺配对消息会让历史回放被真实 API 拒绝 / 成功的降级会被评测误判为失败 | 8.2 / 14.1 |
 | R15 | 降级文案按「毫秒」如实显示小于 1 秒的预算 | `--budget-ms 1` 曾显示成「已达 1 秒」，与实际严重不符 | 14.1 |
+| R16 | 运行时在**两种模式**下都注入 `user_id` 环境参数 | 此前只有 Plan 注入，导致 `get_calendar_events` 在 ReAct 模式**永远无法成功**（模型不可能知道 user_id） | 8.2 / 11.4 |
+| R17 | 用例级新增「工具必须真的成功」判定（`tool_ok`） | 工具全挂但工具集合/参数恰好正确时，指标会假装一切正常（S7 首次运行就踩到：`invalid_output` 被 100% 的指标掩盖） | 16.2 |
+| R18 | LLM-as-Judge 必须同时看到**工具观测数据** | 不给观测，裁判会把回答里的真实数值误判为「编造事实」（首次真实运行实测） | 16.3 |
 
 **实测发现（真实冒烟，S3–S4）**：DeepSeek 在带 `tool_calls` 的响应里**有时输出 `content`（Thought）、有时不输出**——同一模型对同类问题先后返回 `content=null` 与 `content="I'll check the current weather in Beijing for you."`。这确认了方案 A（Thought 可选）是唯一稳妥的选择。另注意 **Thought 语言不受输入语言约束**（中文输入得到英文 Thought），如需统一只能在 prompt 中显式要求。
 
@@ -271,15 +274,21 @@ src/first_agent/
 │   └── migrate.py         # ✅ v1 → v2 迁移（R9）
 ├── evals/
 │   ├── scripted.py        # ✅ ScriptedLLM
-│   ├── case.py            # ✅ EvalCase / 判定 / 加载
-│   ├── runner.py          # ✅ RunOutcome / CaseCheck / run_case
-│   ├── metrics.py         # ✅ 指标与 baseline 门禁
-│   ├── adapters.py        # ✅ 真引擎 → RunOutcome
-│   ├── cases.jsonl        # ✅ 5 条种子（S7 扩到 30～40）
-│   └── baseline.json      # ⏳ S7
-└── main.py                # ✅ CLI（chat --mode react）
+│   ├── case.py            # ✅ EvalCase / 判定 / 加载（含 offline 夹具）
+│   ├── runner.py          # ✅ RunOutcome / CaseCheck / 隔离执行
+│   ├── metrics.py         # ✅ 指标与方向化 baseline 门禁
+│   ├── adapters.py        # ✅ 真引擎 → RunOutcome（含 tool_errors / observations）
+│   ├── offline.py         # ✅ 离线夹具装配（S7）
+│   ├── live.py            # ✅ 真 LLM 装配（S7）
+│   ├── suite.py           # ✅ 编排 / 元数据 / 门禁 / 产物（S7）
+│   ├── judge.py           # ✅ LLM-as-Judge（S7）
+│   ├── cases.jsonl        # ✅ 36 条用例
+│   ├── judge_cases.jsonl  # ✅ 5 条开放式用例
+│   ├── baseline.json      # ✅ 离线基线（硬门禁）
+│   └── current.json / diff.md        # ✅ 本次结果与对比
+└── main.py                # ✅ CLI（chat / eval）
 
-tests/                     # ✅ 354 个离线测试（无 API Key 可跑）
+tests/                     # ✅ 380 个离线测试（无 API Key 可跑）
 var/                       # ✅ 本地 SQLite 与 Trace（已 gitignore）
 
 scripts/
@@ -1013,15 +1022,19 @@ var/traces/YYYY-MM-DD.jsonl
 
 首版 30～40 条：
 
-| 类型 | 数量 |
-|---|---:|
-| 单工具调用 | 8 |
-| 双工具组合 | 6 |
-| 三工具依赖链 | 5 |
-| 缺少参数追问 | 4 |
-| 工具失败与降级 | 4 |
-| 记忆 add/update/keep/skip/ignore | 6 |
-| 无关问题不调用工具 | 3 |
+| 类型 | 数量 | `category` |
+|---|---:|---|
+| 单工具调用 | 8 | `single_tool` |
+| 双工具组合 | 6 | `double_tool` |
+| 三工具依赖链 | 5 | `chain` |
+| 缺少参数追问 | 4 | `need_info` |
+| 工具失败与降级 | 4 | `failure` |
+| 记忆 add/update/keep/skip/ignore | 6 | `memory` |
+| 无关问题不调用工具 | 3 | `no_tool` |
+
+实现补充（S7）：本表已落成 `cases.jsonl` 的 36 条用例，并由
+`tests/test_evals_harness.py::test_case_set_matches_design_distribution` 断言钉住——
+**改用例就必须同步改本表**，否则测试直接失败。
 
 ### 16.2 用例格式
 
@@ -1065,12 +1078,33 @@ var/traces/YYYY-MM-DD.jsonl
 - `plan` 用例若同时填写 `expected_tool_sequence` 与 `allowed_topological_orders`，**以 `allowed_topological_orders` 为准**；`expected_tool_sequence` 视为默认拓扑序（写入基线用）。
 - `expected_status` 为可选字段，只表示运行状态，**不能代表答案正确**。
 
+实现补充（S7）：
+
+- **显式声明才判定**：`"expected_tool_set": []` / `"expected_tool_sequence": []` 表示
+  **不允许调用任何工具**；字段缺省才是「不约束」。二者语义必须区分，否则「什么都没调」
+  会被当成「没约束」而静默通过。
+- `category`：用例类型，与 16.1 的表一一对应，仅用于统计与文档对照。
+- `expect_tool_errors`（默认 `false`）：默认**不允许任何工具执行出错**，只有「工具失败
+  与降级」类用例置 `true`。这是独立于指标的用例级判定，用于堵死
+  「工具全挂、但工具集合与参数恰好正确」造成的假绿（见 R17）。
+- `offline`：离线夹具（ScriptedLLM + Fake provider 的确定输入），见 16.5。
+
 ### 16.3 评测口径
 
 - Plan：比较有序 `Tool Sequence`（受上表规则约束）。
 - ReAct：比较 `Tool Set`、参数和额外调用，不强制唯一顺序。
 - 确定性答案使用断言。
 - 开放式答案另建 `judge_cases.jsonl`，使用独立 LLM-as-Judge，并按 judge 准确率单独报告。
+
+实现补充（S7）：
+
+- `judge_cases.jsonl`（5 条）没有字符串断言，只有自然语言 `criteria`。
+- 裁判输入 = 用户输入 + 验收标准 + **工具观测数据** + 助手回答。观测数据必不可少：
+  不给观测时裁判会把回答里的真实数值误判为「编造事实」（R18，首次真实运行实测）。
+- 裁判只回 `{"passed", "reason"}`；**裁判失败的样本不计入分母**（`judged=False`），
+  否则指标会混入裁判自身的波动。
+- `LlmJudge` 目前复用同一客户端 + 独立裁判 prompt；若追求更强独立性，可用
+  `JUDGE_MODEL` 指定另一个模型（v2 未强制）。
 
 ### 16.4 数据库隔离
 
@@ -1079,15 +1113,23 @@ var/traces/YYYY-MM-DD.jsonl
 - 禁止在 cases 之间共享 memory.db。
 - 测试并发执行时，每个 case 必须有唯一 session_id。
 
+实现补充（S7）：由 `runner.run_cases_isolated(cases, factory)` 落地——**工厂模式**
+（`case → 全新运行时`）而不是共享引擎，每个用例拿到独立的 `:memory:` DB；
+用例专属 `user_id` 统一为 `case:<case_id>`（`case.eval_user_id()`），
+时钟与基准日固定为 `2026-10-10`，保证相对时间可复现。
+
 ### 16.5 Baseline 回归
 
 目录：
 
 ```text
 evals/
-├── baseline.json
-├── current.json
-└── diff.md
+├── baseline.json          # 离线基线（硬门禁，进 git）
+├── current.json           # 本次结果（进 git）
+├── diff.md                # 人类可读对比
+├── baseline_live.json     # 真 LLM 基线（波动指标，只告警）
+├── current_live.json
+└── diff_live.md
 ```
 
 流程：
@@ -1115,6 +1157,20 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 - tool schema version
 - case set hash
 
+实现补充（S7）：
+
+- **两段式命令**：`first-agent eval`（离线：ScriptedLLM + Fake Tools，硬门禁）、
+  `first-agent eval --real`（真模型 + **同样的 Fake 世界**，只告警）。真 LLM 段只换模型、
+  不换外部世界——若连天气 API 一起换，就无法判断指标变化来自模型还是来自外部服务。
+- **离线段的定位必须说清**：夹具显式声明「称职模型会怎么回答」，因此 100% 是期望值，
+  它的价值在**回归检测**（已实测：破坏 `$steps` 解析 → `Argument Accuracy` 恶化 → 门禁失败；
+  把 `conflict` 错映射为 `keep` → `Memory Decision Accuracy` 恶化 → 门禁失败）。
+  模型能力由真 LLM 段衡量。
+- 告警与门禁**都必须看容差**：否则 0.1pt 的抖动也会报警，几次之后就没人看了。
+- 用例失败（含 `tool_ok`）与指标恶化同为硬失败；`--update-baseline` **拒绝**把失败结果写成基线。
+- 元数据（commit / model / prompt_version / tool_schema_version / case_set_hash）随
+  `baseline.json` 与 `current.json` 一起落盘，方便回答「这次变化对应哪次改动」。
+
 ### 16.6 指标
 
 | 指标 | 口径 |
@@ -1128,7 +1184,8 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 | Cross-session Memory Recall | 跨会话可恢复的长期记忆占比 |
 | Average Steps | 平均循环步数（越低越好） |
 | Average Latency | 平均单次 run 耗时（越低越好） |
-| Task Success Rate | **仅对 `judge_cases.jsonl` 的开放式用例**，按 LLM-as-Judge 判定正确的占比；确定性用例不计入本指标（用 `assertions` 断言代替） |
+| Task Success Rate | **仅对 `judge_cases.jsonl` 的开放式用例**，按 LLM-as-Judge 判定正确的占比（只统计裁判成功的样本）；确定性用例不计入本指标（用 `assertions` 断言代替） |
+| Assertion Pass Rate | 表外附加指标：声明了 `assertions` 的用例中全部断言通过的占比（真 LLM 段波动明显，只作参考） |
 | Run-to-run Consistency | 同一用例真 LLM 重复 3 次的结论一致率 |
 
 ---
@@ -1184,6 +1241,17 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 | Plan 失败降级到 ReAct | `tests/test_budget_recovery.py::test_invalid_plan_degrades_to_react` | ✅ |
 | 降级成功不留失败痕迹 | `tests/test_budget_recovery.py::test_invalid_plan_degrades_to_react`（断言 `error is None`） | ✅ |
 | 毫秒级预算如实显示 | `tests/test_budget_recovery.py::test_partial_answer_reports_milliseconds_for_sub_second_budget` | ✅ |
+| 无 API Key 一键跑完全部稳定指标 | `tests/test_cli.py::test_eval_subcommand_runs_offline` | ✅ |
+| 用例集与 16.1 分布一致（36 条） | `tests/test_evals_harness.py::test_case_set_matches_design_distribution` | ✅ |
+| 每个用例独立 DB | `tests/test_eval_suite.py::test_each_case_gets_its_own_database` | ✅ |
+| 指标恶化按方向判定并触发硬门禁 | `tests/test_eval_suite.py::test_gate_fails_on_stable_degradation_beyond_tolerance` | ✅ |
+| 波动指标只在超过容差时告警 | `tests/test_eval_suite.py::test_volatile_metric_only_warns_when_beyond_tolerance` | ✅ |
+| 工具执行失败即判用例失败 | `tests/test_eval_suite.py::test_tool_error_fails_the_case_even_when_expectations_match` | ✅ |
+| `expect_tool_errors` 可声明允许失败 | `tests/test_eval_suite.py::test_expect_tool_errors_suppresses_the_guard` | ✅ |
+| `$steps` 引用被真正解析 | `tests/test_plan_engine.py::test_case_plan_012_passes_through_harness` | ✅ |
+| 裁判失败样本不计入成功率 | `tests/test_eval_suite.py::test_task_success_rate_excludes_unjudged_samples` | ✅ |
+| 开放式用例端到端可判定 | `tests/test_eval_suite.py::test_run_judge_cases_end_to_end_with_a_fake_judge` | ✅ |
+| 基线/结果/对比三件套落盘 | `tests/test_eval_suite.py::test_write_outputs_creates_current_and_diff` | ✅ |
 | 跨会话记忆恢复 | `tests/test_memory_store.py` + `tests/test_runtime_engine.py` | ✅（评测用例样本待 S7 扩到 30～40 条） |
 
 ---
@@ -1258,7 +1326,7 @@ v2 只建立在 `first-agent/`。
 
 ## 19. 里程碑
 
-> 实现进度（截至本文档 v0.4）：**Phase 0 ✅ / Phase 1 🟡 / Phase 2 ✅ / Phase 3a ✅ / Phase 3b ✅ / Phase 4 🟡 / Phase 5 ⏳**
+> 实现进度（截至本文档 v0.4）：**Phase 0 ✅ / Phase 1 🟡 / Phase 2 ✅ / Phase 3a ✅ / Phase 3b ✅ / Phase 4 ✅ / Phase 5 ⏳**
 >
 > 实际执行被拆成 S0～S8 若干小步，每步一个 commit + 一次全量测试。其中 **S2「护栏提前」** 把 Phase 4
 > 的测试骨架（ScriptedLLM / Fake provider / runner / metrics / 回归门禁）提前实现，理由：没有护栏
@@ -1271,7 +1339,7 @@ v2 只建立在 `first-agent/`。
 | Phase 2 工具与动态记忆 | ✅ | S3 工具执行器 + S4 SessionStore / 动态注入 / 确定性 add-update-keep + S5 LLM 抽取与关系裁决 |
 | Phase 3a Plan 结构与依赖 | ✅ | S6a |
 | Phase 3b 失败恢复 | ✅ | S6b |
-| Phase 4 评测与回归 | 🟡 | 护栏已提前到 S2；用例仅 5 条种子，`baseline.json` 与 CI 门禁待 S7 |
+| Phase 4 评测与回归 | ✅ | S7：36 条用例 + 离线硬门禁 + 真 LLM 段 + LLM-as-Judge |
 | Phase 5 文档与可选优化 | ⏳ | S8（含 README 重写） |
 
 ### Phase 0 ✅：归档与入口保护，0.5 天
@@ -1344,8 +1412,35 @@ uv run first-agent chat --mode react --user demo --session s1 "北京今天天�
 
 退出条件：无 API Key 可以一键跑完全部稳定指标。
 
-**部分满足**：ScriptedLLM / Fake Tools / runner / metrics / 方向化门禁 / 端到端离线跑通均已完成（S2）；
-剩余为把 `cases.jsonl` 从 5 条扩到 30～40 条、生成 `baseline.json`、加 CI 门禁（S7）。
+**已满足**：`cases.jsonl` 36 条（分布由测试钉死）、`judge_cases.jsonl` 5 条、
+离线硬门禁（`baseline.json` + 方向化容差判定 + 用例级 `tool_ok`）、真 LLM 段（`--real`）、
+LLM-as-Judge（`--judge`）、元数据落盘（commit / model / prompt / tool schema / case set hash）、
+`first-agent eval` 一键跑完（无 API Key）。
+
+**门禁有效性实测（变异测试）**：
+
+| 注入的缺陷 | 结果 |
+|---|---|
+| `resolve_arguments` 不解析 `$steps` 引用 | `Argument Accuracy` 恶化 → 门禁失败（exit 1） |
+| `RELATION_TO_ACTION["conflict"]` 改成 `keep` | `Memory Decision Accuracy` 恶化 → 门禁失败（exit 1） |
+| ReAct 去掉工具调用前的预算检查 | 3 条预算用例失败（S6b） |
+
+**真 LLM 段首跑（deepseek-chat，36 条用例 + 5 条 judge）**：
+
+| 指标 | 离线（夹具） | 真 LLM |
+|---|---:|---:|
+| Tool Selection Accuracy | 100.00 | 95.24 |
+| Tool Sequence Accuracy | 100.00 | 80.00 |
+| Argument Accuracy | 100.00 | 94.74 |
+| Memory Decision Accuracy | 100.00 | 80.56 |
+| Extra Tool Call Rate | 0.00 | 4.88 |
+| Average Steps | 1.72 | 1.58 |
+| Average Latency | 0.6 ms | 1676.7 ms |
+| Task Success Rate（judge） | — | 100.00（5/5 裁判成功） |
+
+**读法**：离线段的 100% 是「期望值」（夹具即理想模型），它衡量 Runtime 忠实度，
+价值在回归检测；真实段才是模型能力。两段差距（如 `Tool Sequence Accuracy`
+100 → 80）正是 v2 想量化的东西，也是 v1 完全没有的数字。
 
 ### Phase 5 ⏳：文档与可选优化，0.5～1 天
 

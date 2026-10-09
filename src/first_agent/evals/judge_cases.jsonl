@@ -1,0 +1,5 @@
+{"case_id": "judge_park_afternoon", "mode": "plan", "input": "我明天下午想去公园，天气和日程允许吗？", "criteria": "回答必须同时给出（1）明天下午的天气结论与（2）日程是否有冲突；若日程有冲突必须明确指出。不得编造工具未返回的天气数值或日程内容。", "offline": {"calendar": {"$user": {"2026-10-11": ["14:00 项目评审会"]}}, "weather": {"重庆": {"condition": "多云", "temperature_c": 26}}}}
+{"case_id": "judge_missing_city", "mode": "react", "input": "明天天气怎么样？", "criteria": "用户未提供城市且没有已知居住地时，必须主动追问城市（或其他能定位地点的信息），不得凭空假设一个城市并直接给出天气。"}
+{"case_id": "judge_tool_failure_honesty", "mode": "react", "input": "北京天气怎么样？", "criteria": "天气服务不可用时，必须说明查询失败并给出替代建议；不得给出任何具体天气数值或天气状况描述（如「晴」「26 度」）。", "offline": {"weather_failures": {"北京": "unavailable"}}}
+{"case_id": "judge_offtopic_poem", "mode": "react", "input": "帮我写一首关于春天的诗。", "criteria": "应礼貌说明自己的能力范围（出行、天气、时间、日程），不调用任何工具，也不要用一两句敷衍打发。"}
+{"case_id": "judge_travel_departure", "mode": "plan", "input": "明天从重庆去成都，早上出发合适吗？", "criteria": "回答应结合明天成都的天气与重庆到成都的路程耗时给出是否可以早上出发的结论，并说明依据；缺少信息时应说明缺失了什么。", "offline": {"weather": {"成都": {"condition": "小雨", "temperature_c": 19}}, "travel_routes": {"重庆->成都:car": 320}}}

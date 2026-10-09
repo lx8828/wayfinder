@@ -130,8 +130,8 @@ def test_engine_can_run_without_memory_service():
     assert outcome.memory_actions == {}
 
 
-def test_seed_case_memory_001_passes_through_the_harness():
-    """种子用例 memory_001：断言两个 key 都是 add（expected_memory_delta 精确匹配）。"""
+def test_case_memory_add_028_passes_through_the_harness():
+    """用例 memory_add_028：两个 key 都是 add（expected_memory_delta 精确匹配）。"""
 
     cases = {case.case_id: case for case in load_cases(CASES_PATH)}
     runtime, _, memories = build(
@@ -148,9 +148,9 @@ def test_seed_case_memory_001_passes_through_the_harness():
         ]
     )
 
-    check = run_case(cases["memory_001"], runtime_engine(runtime))
+    check = run_case(cases["memory_add_028"], runtime_engine(runtime))
 
     assert check.error is None
     assert check.outcome.memory_actions == {"user_name": "add", "home_city": "add"}
     assert check.passed is True
-    assert memories.values("case:memory_001") == {"user_name": "张三", "home_city": "重庆"}
+    assert memories.values("case:memory_add_028") == {"user_name": "张三", "home_city": "重庆"}

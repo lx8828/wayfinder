@@ -29,9 +29,19 @@ def test_unknown_mode_is_rejected_by_parser(capsys):
 
 
 def test_pending_subcommands_report_phase(capsys):
-    for name in ("memory", "trace", "eval"):
+    for name in ("memory", "trace"):
         assert main([name]) == 2
         assert "尚未实现" in capsys.readouterr().err
+
+
+def test_eval_subcommand_runs_offline(tmp_path, capsys):
+    """`eval` 在无 API Key 下可跑完整套件，产物写到 --out 指定的目录。"""
+
+    assert main(["eval", "--quiet", "--out", str(tmp_path)]) == 0
+
+    capsys.readouterr()
+    assert (tmp_path / "current.json").exists()
+    assert (tmp_path / "diff.md").exists()
 
 
 def test_chat_parser_accepts_expected_flags():

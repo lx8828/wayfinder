@@ -1,7 +1,7 @@
 """v2 命令行入口。
 
-已实现：``chat --mode react``（S3）
-未实现：``memory``（S4）、``chat --mode plan``（S6）、``trace`` / ``eval``（S7）
+已实现：``chat``（S3 react / S6 plan）、``eval``（S7 评测与回归门禁）
+未实现：``memory`` / ``trace``（S8）
 """
 
 from __future__ import annotations
@@ -14,9 +14,8 @@ from typing import Sequence
 from first_agent import __version__
 
 _PENDING = {
-    "memory": "S4",
-    "trace": "S7",
-    "eval": "S7",
+    "memory": "S8",
+    "trace": "S8",
 }
 
 
@@ -37,6 +36,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     chat.add_argument("--no-trace", action="store_true", help="关闭 Trace 写入")
 
+    evals = subparsers.add_parser("eval", help="运行评测用例并做 baseline 回归门禁")
+    evals.add_argument("--real", action="store_true", help="用真实 LLM 跑（波动指标，需要 API Key）")
+    evals.add_argument("--cases", default=None, help="用例文件（默认 evals/cases.jsonl）")
+    evals.add_argument("--out", default=None, help="产物目录（默认 evals/）")
+    evals.add_argument(
+        "--update-baseline", action="store_true", help="把本次结果写为基线后退出"
+    )
+    evals.add_argument("--no-gate", action="store_true", help="只报告，不因门禁失败返回非零")
+    evals.add_argument(
+        "--judge", action="store_true", help="额外跑 judge_cases.jsonl（开放式答案，需配合 --real）"
+    )
+    evals.add_argument("--quiet", action="store_true", help="只输出门禁结论与失败用例")
+
     for name, phase in _PENDING.items():
         subparsers.add_parser(name, help=f"未实现（{phase}）")
     return parser
@@ -54,6 +66,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "chat":
         return _run_chat(args)
+    if args.command == "eval":
+        return _run_eval(args)
 
     print(
         f"[first-agent] 子命令 {args.command!r} 尚未实现，计划于 {_PENDING[args.command]} 提供。",
@@ -172,6 +186,101 @@ def _run_chat(args: argparse.Namespace) -> int:
     )
     # need_info（追问）是正常结果，不是错误
     return 0 if result.status in {"success", "need_info"} else 1
+
+
+def _run_eval(args: argparse.Namespace) -> int:
+    """离线/真 LLM 评测 + baseline 回归门禁（design.md 16.4 / 16.5）。"""
+
+    from pathlib import Path
+
+    from first_agent.evals import offline, suite
+
+    cases_path = Path(args.cases) if args.cases else Path(__file__).resolve().parent / "evals" / "cases.jsonl"
+    cases = suite.load_cases_file(cases_path)
+    if not cases:
+        print(f"[first-agent] 用例文件为空：{cases_path}", file=sys.stderr)
+        return 2
+    out_dir = Path(args.out) if args.out else cases_path.parent
+    client = None
+
+    if args.real:
+        from first_agent.evals import live
+
+        try:
+            client = live.build_live_client()
+        except RuntimeError as exc:
+            print(f"[first-agent] {exc}", file=sys.stderr)
+            return 2
+        factory = live.live_engine_factory(client=client)
+        mode, model, suffix = "real", os.getenv("DEEPSEEK_MODEL", live.DEFAULT_MODEL), "_live"
+    else:
+        if args.judge:
+            print("[first-agent] --judge 需要与 --real 一起使用（裁判必须调真实模型）。", file=sys.stderr)
+            return 2
+        factory = offline.offline_engine_factory
+        mode, model, suffix = "offline", "scripted+fake", ""
+
+    metadata = suite.build_metadata(
+        cases_path=cases_path,
+        mode=mode,
+        model=model,
+        registry=offline.build_registry(cases[0]),
+    )
+    run = suite.run_suite(cases, factory, metadata=metadata)
+
+    if not args.quiet:
+        print(f"[first-agent] 评测完成：{len(run.checks)} 条用例（mode={mode}，model={model}）")
+        print(suite.metrics_report(run.metrics))
+
+    if args.judge:
+        from first_agent.evals import judge as judge_mod
+
+        judge_cases = judge_mod.load_judge_cases(cases_path.parent / "judge_cases.jsonl")
+        judged = judge_mod.run_judge_cases(
+            judge_cases, factory, judge_mod.LlmJudge(client)
+        )
+        rate = judge_mod.task_success_rate(judged)
+        if rate is not None:
+            run.metrics["Task Success Rate"] = rate
+        if not args.quiet:
+            print(judge_mod.format_judge_report(judged))
+        print(f"[first-agent] judge 样本 {len(judged)} 条，Task Success Rate = {rate}")
+
+    baseline_path = out_dir / f"baseline{suffix}.json"
+    if args.update_baseline:
+        if run.failures:
+            print(suite.failure_report(run.checks), file=sys.stderr)
+            print(
+                f"[first-agent] 有 {len(run.failures)} 条用例未通过，拒绝写为基线。",
+                file=sys.stderr,
+            )
+            return 1
+        suite.save_baseline(baseline_path, run)
+        paths = suite.write_outputs(run, out_dir=out_dir, suffix=suffix)
+        print(f"[first-agent] 基线已更新：{baseline_path}")
+        print(f"[first-agent] 当前结果：{paths['current']}")
+        return 0
+
+    gate = suite.evaluate_gate(suite.load_baseline(baseline_path), run.metrics)
+    paths = suite.write_outputs(run, out_dir=out_dir, suffix=suffix, gate=gate)
+    print(f"[first-agent] 产物：{paths['current']} / {paths.get('diff', '—')}")
+    print(suite.failure_report(run.checks))
+    if not args.quiet:
+        print(gate.diff_markdown)
+
+    if gate.failed_deltas:
+        names = "、".join(delta.name for delta in gate.failed_deltas)
+        print(f"[first-agent] 门禁失败：稳定指标恶化 —— {names}", file=sys.stderr)
+        return 0 if args.no_gate else 1
+    if gate.warnings:
+        names = "、".join(delta.name for delta in gate.warnings)
+        print(f"[first-agent] 警告（波动指标恶化，需人工复核）：{names}", file=sys.stderr)
+    if run.failures:
+        print(f"[first-agent] 门禁失败：{len(run.failures)} 条用例未通过", file=sys.stderr)
+        return 0 if args.no_gate else 1
+
+    print("[first-agent] 门禁通过 ✅")
+    return 0
 
 
 if __name__ == "__main__":

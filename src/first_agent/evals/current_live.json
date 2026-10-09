@@ -1,0 +1,24 @@
+{
+  "metadata": {
+    "case_count": 36,
+    "case_set_hash": "6612a021f59b",
+    "generated_at": "2026-10-09T20:03:09+00:00",
+    "git_commit": "928509d",
+    "mode": "real",
+    "model": "deepseek-chat",
+    "prompt_version": "f61d6c635cb9",
+    "tool_schema_version": "b0438bbb98a6"
+  },
+  "metrics": {
+    "Argument Accuracy": 94.74,
+    "Assertion Pass Rate": 60.0,
+    "Average Latency": 1676.7,
+    "Average Steps": 1.58,
+    "Extra Tool Call Rate": 4.88,
+    "Memory Decision Accuracy": 80.56,
+    "Structured Output Validity Rate": 100.0,
+    "Task Success Rate": 80.0,
+    "Tool Selection Accuracy": 95.24,
+    "Tool Sequence Accuracy": 80.0
+  }
+}

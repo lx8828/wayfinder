@@ -7,7 +7,9 @@ from first_agent.evals.case import (
     HARD_MAX_STEPS,
     Assertion,
     EvalCase,
+    OfflineFixture,
     effective_max_steps,
+    eval_user_id,
     load_cases,
 )
 from first_agent.evals.metrics import (
@@ -20,7 +22,25 @@ from first_agent.evals.metrics import (
     load_metrics,
     save_metrics,
 )
-from first_agent.evals.runner import CaseCheck, RunOutcome, run_case, run_cases
+from first_agent.evals.runner import (
+    CaseCheck,
+    EngineFactory,
+    RunOutcome,
+    run_case,
+    run_cases,
+    run_cases_isolated,
+)
+from first_agent.evals.suite import (
+    GateResult,
+    SuiteRun,
+    build_metadata,
+    evaluate_gate,
+    failure_report,
+    load_baseline,
+    run_suite,
+    save_baseline,
+    write_outputs,
+)
 from first_agent.evals.scripted import (
     ScriptedLLM,
     ToolCallSpec,
@@ -36,9 +56,21 @@ __all__ = [
     # case
     "EvalCase",
     "Assertion",
+    "OfflineFixture",
     "load_cases",
     "effective_max_steps",
+    "eval_user_id",
     "HARD_MAX_STEPS",
+    # suite
+    "SuiteRun",
+    "GateResult",
+    "build_metadata",
+    "evaluate_gate",
+    "failure_report",
+    "load_baseline",
+    "run_suite",
+    "save_baseline",
+    "write_outputs",
     # scripted
     "ScriptedLLM",
     "ToolCallSpec",
@@ -51,8 +83,10 @@ __all__ = [
     # runner
     "RunOutcome",
     "CaseCheck",
+    "EngineFactory",
     "run_case",
     "run_cases",
+    "run_cases_isolated",
     # metrics
     "METRIC_SPECS",
     "MetricDelta",

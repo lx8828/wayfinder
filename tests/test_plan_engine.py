@@ -574,20 +574,22 @@ def test_long_term_memory_reaches_the_planner():
     assert "home_city：重庆" in planner_input
 
 
-def test_seed_case_plan_001_passes_through_harness():
+def test_case_plan_012_passes_through_harness():
+    """用例 plan_double_datetime_weather_012：``$steps`` 引用被真正解析。"""
+
     cases = {case.case_id: case for case in load_cases(CASES_PATH)}
     runtime, _ = build_runtime(
         [
-            json_obj({"date": "明天下午", "purpose": "去公园"}),
+            json_obj({"destination": "重庆"}),
             json_obj(
                 {
                     "need_info": [],
-                    "reason": "先解析时间再查天气",
+                    "reason": "先解析日期再查天气",
                     "steps": [
                         {
                             "id": 0,
                             "tool": "resolve_datetime",
-                            "arguments": {"expression": "明天下午"},
+                            "arguments": {"expression": "明天"},
                             "depends_on": [],
                         },
                         {
@@ -599,12 +601,14 @@ def test_seed_case_plan_001_passes_through_harness():
                     ],
                 }
             ),
-            text("明天下午重庆多云，适合去公园。"),
+            text("明天（2026-10-11）重庆多云。"),
         ]
     )
 
-    check = run_case(cases["plan_001"], runtime_engine(runtime))
+    check = run_case(cases["plan_double_datetime_weather_012"], runtime_engine(runtime))
 
     assert check.error is None
     assert check.outcome.tool_calls == ["resolve_datetime", "get_weather"]
+    # 引用必须解析成实际日期，而不是原样透传 "$steps.0.date"
+    assert check.outcome.arguments["get_weather"] == [{"city": "重庆", "date": "2026-10-11"}]
     assert check.passed is True

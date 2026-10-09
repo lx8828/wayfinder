@@ -13,6 +13,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from typing import Any
 
 from first_agent.evals.case import (
     EvalCase,
@@ -37,9 +38,15 @@ class RunOutcome:
     memory_actions: dict[str, str] = field(default_factory=dict)
     structured_output_ok: bool = True
     error: str | None = None
+    # 执行失败的调用（含被依赖失败阻塞的步骤），供「工具必须真的成功」这一判定使用
+    tool_errors: list[dict[str, Any]] = field(default_factory=list)
+    # 成功调用的观测数据：裁判需要它才能判断「回答里的数字是不是编造的」
+    observations: list[dict[str, Any]] = field(default_factory=list)
 
 
 Engine = Callable[[EvalCase], RunOutcome]
+# 用例 → 引擎：允许为**每个用例**单独构造（design.md 16.4 的 DB 隔离要求）
+EngineFactory = Callable[[EvalCase], Engine]
 
 
 @dataclass
@@ -69,6 +76,19 @@ class CaseCheck:
         return True
 
 
+def tool_calls_ok(case: EvalCase, outcome: RunOutcome) -> bool | None:
+    """工具是否**真的全部执行成功**。
+
+    「工具失败与降级」类用例声明 ``expect_tool_errors`` 后不再判定；其余用例只要
+    有一次调用失败即判失败——否则工具全挂、但工具集合与参数恰好都对时，
+    指标会假装一切正常（这是本套件最初版本的漏洞）。
+    """
+
+    if case.expect_tool_errors:
+        return None
+    return not outcome.tool_errors
+
+
 def run_case(case: EvalCase, engine: Engine) -> CaseCheck:
     """执行单个用例并把异常转成结果，避免一个用例炸掉整批。"""
 
@@ -85,6 +105,7 @@ def run_case(case: EvalCase, engine: Engine) -> CaseCheck:
         "tool_sequence": sequence_matches(case, outcome.tool_calls),
         "arguments": arguments_match(case, outcome.arguments),
         "memory_delta": memory_delta_matches(case, outcome.memory_actions),
+        "tool_ok": tool_calls_ok(case, outcome),
     }
     assertion_results = [evaluate_assertion(a, outcome.answer) for a in case.assertions]
     return CaseCheck(
@@ -98,3 +119,12 @@ def run_case(case: EvalCase, engine: Engine) -> CaseCheck:
 
 def run_cases(cases: Iterable[EvalCase], engine: Engine) -> list[CaseCheck]:
     return [run_case(case, engine) for case in cases]
+
+
+def run_cases_isolated(cases: Iterable[EvalCase], factory: EngineFactory) -> list[CaseCheck]:
+    """每个用例**单独构造**引擎与数据库（design.md 16.4）。
+
+    共享引擎会让记忆与会话在用例之间互相污染，因此真实评测必须走这条路。
+    """
+
+    return [run_case(case, factory(case)) for case in cases]
