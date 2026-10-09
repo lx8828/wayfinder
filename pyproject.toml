@@ -1,7 +1,7 @@
 [project]
 name = "first-agent"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.0.dev0"
+description = "Tool Agent Runtime: ReAct-style tool calling + Plan-Execute + memory (v2)"
 readme = "README.md"
 authors = [
     { name = "lx", email = "834659376@qq.com" }
@@ -17,7 +17,16 @@ dependencies = [
 ]
 
 [project.scripts]
-first-agent = "first_agent:main"
+first-agent = "first_agent.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]
