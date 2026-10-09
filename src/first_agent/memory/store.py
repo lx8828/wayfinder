@@ -105,8 +105,21 @@ class MemoryStore:
             (now_iso(), user_id, key),
         )
 
+    def import_candidate(self, candidate: MemoryCandidate) -> str:
+        """**导入式**写入（迁移专用）：存在即覆盖，不做关系裁决。
+
+        与 :meth:`apply_candidate` 的区别：这里假定调用方已经决定「就是要写这份数据」，
+        因此永远 upsert；返回 ``add`` 或 ``update``。迁移必须幂等，所以不能走关系裁决。
+        """
+
+        if self.get(candidate.user_id, candidate.key) is None:
+            self._insert(candidate)
+            return "add"
+        self._update(candidate)
+        return "update"
+
     # -- 内部 -------------------------------------------------------------
-    def _insert(self, candidate: MemoryCandidate) -> None:
+    def _insert(self, candidate: MemoryCandidate, *, seen_at: str | None = None) -> None:
         timestamp = now_iso()
         self.db.execute(
             """
@@ -122,11 +135,12 @@ class MemoryStore:
                 candidate.source,
                 timestamp,
                 timestamp,
-                timestamp,
+                seen_at or timestamp,
             ),
         )
 
-    def _update(self, candidate: MemoryCandidate) -> None:
+    def _update(self, candidate: MemoryCandidate, *, seen_at: str | None = None) -> None:
+        timestamp = now_iso()
         self.db.execute(
             """
             UPDATE memories
@@ -137,8 +151,8 @@ class MemoryStore:
                 candidate.value,
                 candidate.category,
                 candidate.source,
-                now_iso(),
-                now_iso(),
+                timestamp,
+                seen_at or timestamp,
                 candidate.user_id,
                 candidate.key,
             ),

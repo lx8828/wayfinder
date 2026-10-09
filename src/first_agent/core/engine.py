@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, Sequence
 
 from first_agent.core.context import RECENT_TURNS_KEEP, ContextBuilder, ContextInputs
@@ -30,6 +30,11 @@ class ChatOutcome:
     result: ReactResult
     ref: SessionRef
     turn_index: int
+    # 本轮后置记忆动作：{key: add/keep/update/skip}，供评测的 expected_memory_delta 对比
+    memory_actions: dict[str, str] = field(default_factory=dict)
+    memory_dropped: list[dict[str, Any]] = field(default_factory=list)
+    # 记忆抽取的结构化输出是否失败（用于评测的 Structured Output Validity Rate）
+    memory_extraction_failed: bool = False
 
 
 class ToolAgentRuntime:
@@ -41,6 +46,8 @@ class ToolAgentRuntime:
         memories: MemoryStore,
         resolver: SessionResolver | None = None,
         context_builder: ContextBuilder | None = None,
+        memory_service: Any = None,
+        remember_after_turn: bool = True,
         tracer: Any = None,
         recent_turns_keep: int = RECENT_TURNS_KEEP,
     ) -> None:
@@ -49,6 +56,8 @@ class ToolAgentRuntime:
         self.memories = memories
         self.resolver = resolver or SessionResolver()
         self.context_builder = context_builder or ContextBuilder()
+        self.memory_service = memory_service
+        self.remember_after_turn = remember_after_turn
         self.tracer = tracer
         self.recent_turns_keep = recent_turns_keep
 
@@ -87,7 +96,28 @@ class ToolAgentRuntime:
             assistant_output=result.answer,
             messages=result.messages,
         )
-        return ChatOutcome(result=result, ref=ref, turn_index=turn_index)
+
+        outcome = ChatOutcome(result=result, ref=ref, turn_index=turn_index)
+        if self.memory_service is not None and self.remember_after_turn:
+            (
+                outcome.memory_actions,
+                outcome.memory_dropped,
+                outcome.memory_extraction_failed,
+            ) = self._remember(user_input, ref.user_id)
+        return outcome
+
+    def _remember(
+        self, user_input: str, user_id: str
+    ) -> tuple[dict[str, str], list[dict[str, Any]], bool]:
+        """后置记忆写入。**任何失败都不能影响本轮回答。**"""
+
+        try:
+            remembered = self.memory_service.remember(user_input, user_id=user_id)
+        except Exception as exc:  # noqa: BLE001 - 记忆是旁路，绝不冒泡
+            self._trace("memory_service_error", error=repr(exc))
+            return {}, [], True
+        return remembered.actions_by_key, list(remembered.dropped), remembered.extraction_failed
+        return remembered.actions_by_key, list(remembered.dropped)
 
     # -- 记忆写入（确定性部分；LLM 抽取与关系裁决在 S5 接入） --------------
     def remember(self, candidate: Any, relation: str | None = None) -> str:

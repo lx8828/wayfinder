@@ -13,6 +13,8 @@ wheels/
 .env
 
 # Local data / runtime artifacts
+# 注意：用 *.bak 而不是 *.db.bak —— 后者匹配不到 memory.db.v1.bak，
+# 曾因此把含真实记忆的备份提交进仓库。
 *.db
-*.db.bak
+*.bak
 var/

@@ -31,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--user", default="demo", help="用户 ID（用于 Trace）")
     chat.add_argument("--session", default="default", help="会话 ID（S4 起用于会话持久化）")
     chat.add_argument("--show-thought", action="store_true", help="在回答前打印 Thought")
+    chat.add_argument("--show-memory", action="store_true", help="在回答后打印本轮记忆动作")
     chat.add_argument("--no-trace", action="store_true", help="关闭 Trace 写入")
 
     for name, phase in _PENDING.items():
@@ -74,6 +75,7 @@ def _run_chat(args: argparse.Namespace) -> int:
     from first_agent.core.engine import ToolAgentRuntime
     from first_agent.core.session import SessionStore
     from first_agent.core.tracing import TraceLogger
+    from first_agent.memory.service import MemoryService
     from first_agent.memory.store import MemoryStore
     from first_agent.providers import QWeatherProvider
     from first_agent.runtime import ReactEngine
@@ -111,10 +113,12 @@ def _run_chat(args: argparse.Namespace) -> int:
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     with Database(db_path) as db:
+        memories = MemoryStore(db)
         runtime = ToolAgentRuntime(
             engine=ReactEngine(client, registry, tracer=tracer),
             sessions=SessionStore(db),
-            memories=MemoryStore(db),
+            memories=memories,
+            memory_service=MemoryService(client, memories, tracer=tracer),
             tracer=tracer,
         )
         tracer.start_run(user_id=args.user, session_id=args.session, mode="react")
@@ -129,12 +133,19 @@ def _run_chat(args: argparse.Namespace) -> int:
 
     print(result.answer)
 
+    if args.show_memory and outcome.memory_actions:
+        print("--- Memory ---")
+        for key, action in outcome.memory_actions.items():
+            print(f"  {key}: {action}")
+        print("--------------")
+
     tracer.end_run(
         status=result.status,
         latency_ms=result.latency_ms,
         final_answer=result.answer,
         steps=result.steps,
         tool_calls=result.tool_calls,
+        memory_actions=outcome.memory_actions,
     )
     return 0 if result.status == "success" else 1
 

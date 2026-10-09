@@ -88,6 +88,10 @@ class UserProfile:
         return self.memories.get("transport_mode")
 
     @property
+    def dietary_preference(self) -> str | None:
+        return self.memories.get("dietary_preference")
+
+    @property
     def long_term_plan(self) -> str | None:
         return self.memories.get("long_term_plan")
 

@@ -4,7 +4,7 @@
 - 仓库：`first-agent`（本文档位于 `docs/design.md`，随代码一同版本化）
 - 版本：v0.4
 - 日期：2026-10-10
-- 状态：Proposed（S0–S4 已实现，见 0.1）
+- 状态：Proposed（S0–S5 已实现，见 0.1）
 - 术语：本文档版本为 v0.4；产品目标版本称 **v2**；旧手写实现称 **v1**（归入 `archive/handwritten_v1/`）
 - 目标：围绕 Agent 编排、原生工具调用、短期/长期记忆和离线评测，把项目二从功能 Demo 升级为可测试、可观测、可回归的 Agent Runtime
 
@@ -63,10 +63,22 @@
 | R5 | `WeatherResult` 放宽：`feels_like_c` 改为可选，新增 `temp_min_c` / `temp_max_c` | 未来 3 天预报没有「体感温度」，硬性必填会让预报查询必然失败 | 11.3 |
 | R6 | 允许 `memory` 依赖 `core.db` | SessionStore 与 MemoryStore 需要共享同一套 SQLite 封装 | 6 |
 | R7 | 新增 `core/db.py`（通用 SQLite 封装，**不含业务 schema**） | 同上 | 5 / 6 |
+| R8 | 规范 key 从 5 个补到 **6 个**（新增 `dietary_preference`）；迁移映射表补「饮食偏好」「用户偏好」 | 用**真实 v1 归档库**验证映射时发现：原表漏了 v1 实际存在的「饮食偏好」，且 category 写的是「偏好」而真实数据是「用户偏好」。不补会导致抽取阶段**静默丢弃**饮食偏好（比 v1 还退步） | 12.2 / 18.2 |
+| R9 | 记忆管线新增 `memory/migrate.py`（逻辑放包内），`scripts/migrate_memory_v1.py` 退化为薄 CLI | 迁移逻辑需要单元测试，脚本文件不适合被 import | 5 / 18.2 |
 
 **实测发现（真实冒烟，S3–S4）**：DeepSeek 在带 `tool_calls` 的响应里**有时输出 `content`（Thought）、有时不输出**——同一模型对同类问题先后返回 `content=null` 与 `content="I'll check the current weather in Beijing for you."`。这确认了方案 A（Thought 可选）是唯一稳妥的选择。另注意 **Thought 语言不受输入语言约束**（中文输入得到英文 Thought），如需统一只能在 prompt 中显式要求。
 
 **实测发现（会话回放）**：把持久化的 `assistant(tool_calls)` + `tool` 消息原样回放给真实 API 未触发协议错误，且第二轮模型能直接复用上一轮 Observation 作答而不重复调用工具。
+
+**记忆管线的验证方法（S5，值得复用）**：记忆是「静默出错」风险最高的模块，因此除了常规单测，还额外做了两件事：
+
+1. **变异测试**：手工注入两个历史缺陷（①「声称 `add` 但不写库」——v1 的原缺陷；②「无视 relation 一律覆盖」），
+   确认测试会失败。前者被 **27 个**测试抓到，后者被 **14 个**抓到。测试有效才算测试。
+2. **真实数据验证**：直接读 `archive/handwritten_v1/` 里的真实 v1 库跑映射，发现映射表缺 2 项（见 R8）。
+   合成数据永远发现不了这种缺口。
+
+围绕「数据不丢」写成了显式不变量：**行数单调不减**、**任何 key 的 value 永不为空**、
+**无论 LLM 给出哪种 relation，已存在的 key 操作后依然存在**。
 
 ---
 
@@ -242,9 +254,10 @@ src/first_agent/
 │   └── plan_execute.py    # ⏳ S6
 ├── memory/
 │   ├── store.py           # ✅ MemoryStore（确定性动作裁决）
-│   ├── extractor.py       # ⏳ S5
-│   ├── adjudicator.py     # ⏳ S5
-│   └── service.py         # ⏳ S5
+│   ├── extractor.py       # ✅ 记忆抽取（LLM，别名规范化 + 逐条容错）
+│   ├── adjudicator.py     # ✅ 关系裁决（LLM，失败保守跳过）
+│   ├── service.py         # ✅ 三层编排（抽取 → 裁决 → 落库）
+│   └── migrate.py         # ✅ v1 → v2 迁移（R9）
 ├── evals/
 │   ├── scripted.py        # ✅ ScriptedLLM
 │   ├── case.py            # ✅ EvalCase / 判定 / 加载
@@ -255,11 +268,11 @@ src/first_agent/
 │   └── baseline.json      # ⏳ S7
 └── main.py                # ✅ CLI（chat --mode react）
 
-tests/                     # ✅ 179 个离线测试（无 API Key 可跑）
+tests/                     # ✅ 258 个离线测试（无 API Key 可跑）
 var/                       # ✅ 本地 SQLite 与 Trace（已 gitignore）
 
 scripts/
-└── migrate_memory_v1.py   # ⏳ S5
+└── migrate_memory_v1.py   # ✅ v1→v2 迁移 CLI（薄包装，逻辑在 memory/migrate.py）
 
 archive/
 └── handwritten_v1/        # ✅ v1 冻结快照（独立 .venv，含 ARCHIVE.md）
@@ -768,6 +781,7 @@ v2.0 只支持单值 KV：
 - `timezone`
 - `transport_mode`
 - `user_name`
+- `dietary_preference`（S5 用真实数据补入，见 R8）
 - `long_term_plan`
 
 多值记忆延后。禁止把 JSON 数组塞进 `value: str`。如果确实需要多值，新增 `memory_values` 表，而不是修改当前语义。
@@ -1091,7 +1105,15 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 | 多轮追问保留状态 | `tests/test_runtime_engine.py::test_working_state_pending_slots_survive_across_turns` | ✅ |
 | 同会话立即使用新记忆 | `tests/test_runtime_engine.py::test_new_memory_is_injected_on_the_next_turn` | ✅ |
 | 会话之间不串数据 | `tests/test_runtime_engine.py::test_sessions_do_not_leak_between_session_ids` | ✅ |
+| 评测用例之间不串记忆 | `tests/test_eval_adapters.py::test_cases_are_isolated_by_case_id` | ✅ |
 | key 已存在时 add 不丢数据 | `tests/test_memory_store.py::test_relation_mapping_is_deterministic` | ✅ |
+| **记忆行数单调不减、value 永不为空** | `tests/test_memory_service.py::test_sequence_never_loses_rows_or_values` | ✅ |
+| **任意 relation 都不会弄丢已有 key** | `tests/test_memory_service.py::test_existing_key_survives_every_relation` | ✅ |
+| 无旧值时不调 Adjudicator | `tests/test_memory_service.py::test_first_write_is_add_and_skips_adjudicator` | ✅ |
+| 抽取失败 → no-op 不污染库 | `tests/test_memory_service.py::test_extraction_failure_writes_nothing` | ✅ |
+| 迁移幂等 | `tests/test_memory_migration.py::test_migration_is_idempotent` | ✅ |
+| 真实 v1 key/category 全部可映射 | `tests/test_memory_migration.py::test_real_v1_key_and_category_pairs_are_all_recognized` | ✅ |
+| 记忆失败不影响回答 | `tests/test_runtime_memory_hook.py::test_memory_failure_never_breaks_the_answer` | ✅ |
 | JSON 校验失败可恢复 | `tests/test_chat_json.py::test_chat_json_retries_and_feeds_error_back` | ✅ |
 | 导入顺序不产生循环导入 | `tests/test_import_order.py` | ✅ |
 | 引擎异常不炸整批评测 | `tests/test_evals_harness.py::test_run_case_turns_engine_crash_into_failure` | ✅ |
@@ -1099,7 +1121,7 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 | Plan 依赖可拓扑排序 | `test_plan_topological_sort` | ⏳ S6a |
 | 引用必须声明 depends_on | `test_plan_reference_requires_dependency` | ⏳ S6a |
 | 超预算可解释退出 | `test_run_budget_exceeded` | ⏳ S6b |
-| 跨会话记忆恢复 | `tests/test_memory_store.py` + 评测用例 | ⏳ S5 / S7 |
+| 跨会话记忆恢复 | `tests/test_memory_store.py` + `tests/test_runtime_engine.py` | ✅（评测用例样本待 S7 扩到 30～40 条） |
 
 ---
 
@@ -1141,6 +1163,7 @@ key 映射表：
 | 居住地 / 用户城市 | `home_city` | |
 | 用户姓名 / 姓名 | `user_name` | |
 | 出行偏好 | `transport_mode` | |
+| 饮食偏好 | `dietary_preference` | S5 用真实数据补入（R8） |
 | 长期计划 | `long_term_plan` | |
 | 其他未列出 key | 原样保留并打 `WARN` 日志 | 无法识别时不静默丢弃 |
 
@@ -1149,9 +1172,10 @@ category 映射表：
 | v1 category | v2 category |
 |---|---|
 | 用户身份 | `user_identity` |
-| 偏好 | `preference` |
+| 用户偏好 / 偏好 | `preference`（S5 用真实数据补入，见 R8） |
 | 习惯 | `habit` |
 | 长期计划 | `long_term_plan` |
+| 其他未列出 category | `preference` + `WARN`（保守兜底） |
 
 v2.0 不支持多值（如“饮食偏好=不吃辣，爱甜食”这类复合值）：迁移时保留原始字符串但按 `long_term_plan`/`preference` 归类，并在迁移报告中列出，供人工决定是否拆分。
 
@@ -1181,7 +1205,7 @@ v2 只建立在 `first-agent/`。
 |---|---|---|
 | Phase 0 归档与入口保护 | ✅ | S0（tag `v1-handwritten` + `archive/handwritten_v1/`） |
 | Phase 1 最小可运行 v2 | 🟡 | S1 契约层 + S3 ReAct；**README 骨架未做**，并入 Phase 5 |
-| Phase 2 工具与动态记忆 | ✅ | S3 工具执行器 + S4 SessionStore / 动态注入 / 确定性 add-update-keep |
+| Phase 2 工具与动态记忆 | ✅ | S3 工具执行器 + S4 SessionStore / 动态注入 / 确定性 add-update-keep + S5 LLM 抽取与关系裁决 |
 | Phase 3a Plan 结构与依赖 | ⏳ | S6a |
 | Phase 3b 失败恢复 | ⏳ | S6b |
 | Phase 4 评测与回归 | 🟡 | 护栏已提前到 S2；用例仅 5 条种子，`baseline.json` 与 CI 门禁待 S7 |
