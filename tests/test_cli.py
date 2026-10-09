@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from first_agent.main import build_parser, main
 
 
@@ -15,9 +17,15 @@ def test_no_command_prints_help(capsys):
     assert "usage" in capsys.readouterr().out
 
 
-def test_plan_mode_is_reported_as_pending(capsys):
-    assert main(["chat", "北京天气", "--mode", "plan"]) == 2
-    assert "S6" in capsys.readouterr().err
+def test_plan_mode_is_accepted_by_parser():
+    args = build_parser().parse_args(["chat", "北京天气", "--mode", "plan"])
+
+    assert args.mode == "plan"
+
+
+def test_unknown_mode_is_rejected_by_parser(capsys):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["chat", "北京天气", "--mode", "nope"])
 
 
 def test_pending_subcommands_report_phase(capsys):

@@ -60,10 +60,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run_chat(args: argparse.Namespace) -> int:
-    if args.mode != "react":
-        print("[first-agent] --mode plan 将在 S6 提供。", file=sys.stderr)
-        return 2
-
     # 延迟导入：让 --version / --help 不依赖 openai / httpx / dotenv
     from pathlib import Path
 
@@ -77,9 +73,20 @@ def _run_chat(args: argparse.Namespace) -> int:
     from first_agent.core.tracing import TraceLogger
     from first_agent.memory.service import MemoryService
     from first_agent.memory.store import MemoryStore
-    from first_agent.providers import QWeatherProvider
-    from first_agent.runtime import ReactEngine
-    from first_agent.tools.builtin import make_time_tool, make_weather_tool
+    from first_agent.providers import (
+        HeuristicTravelProvider,
+        LlmDateTimeProvider,
+        LocalCalendarProvider,
+        QWeatherProvider,
+    )
+    from first_agent.runtime import PlanExecuteEngine, ReactEngine
+    from first_agent.tools.builtin import (
+        make_calendar_tool,
+        make_resolve_datetime_tool,
+        make_time_tool,
+        make_travel_time_tool,
+        make_weather_tool,
+    )
     from first_agent.tools.registry import ToolRegistry
 
     load_dotenv()
@@ -98,6 +105,9 @@ def _run_chat(args: argparse.Namespace) -> int:
 
     registry = ToolRegistry()
     registry.register(make_time_tool())
+    registry.register(make_resolve_datetime_tool(LlmDateTimeProvider(client, tracer=tracer)))
+    registry.register(make_travel_time_tool(HeuristicTravelProvider()))
+    registry.register(make_calendar_tool(LocalCalendarProvider(os.getenv("CALENDAR_PATH", "var/calendar.json"))))
     if os.getenv("QWEATHER_API_KEY"):
         registry.register(
             make_weather_tool(
@@ -116,13 +126,18 @@ def _run_chat(args: argparse.Namespace) -> int:
         memories = MemoryStore(db)
         runtime = ToolAgentRuntime(
             engine=ReactEngine(client, registry, tracer=tracer),
+            plan_engine=PlanExecuteEngine(client, registry, tracer=tracer),
             sessions=SessionStore(db),
             memories=memories,
             memory_service=MemoryService(client, memories, tracer=tracer),
             tracer=tracer,
         )
-        tracer.start_run(user_id=args.user, session_id=args.session, mode="react")
-        outcome = runtime.chat(args.message, user_id=args.user, session_id=args.session)
+        tracer.start_run(
+            user_id=args.user, session_id=args.session, mode=args.mode, mode_selection=args.mode
+        )
+        outcome = runtime.chat(
+            args.message, user_id=args.user, session_id=args.session, mode=args.mode
+        )
 
     result = outcome.result
     if args.show_thought and result.thoughts:
@@ -147,7 +162,8 @@ def _run_chat(args: argparse.Namespace) -> int:
         tool_calls=result.tool_calls,
         memory_actions=outcome.memory_actions,
     )
-    return 0 if result.status == "success" else 1
+    # need_info（追问）是正常结果，不是错误
+    return 0 if result.status in {"success", "need_info"} else 1
 
 
 if __name__ == "__main__":

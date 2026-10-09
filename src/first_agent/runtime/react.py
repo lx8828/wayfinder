@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from first_agent.core.client import LLMClient, LLMError
 from first_agent.core.context import DEFAULT_SYSTEM_PROMPT
@@ -81,7 +81,19 @@ class ReactEngine:
         return self.run_messages(messages)
 
     # -- 主循环 -----------------------------------------------------------
-    def run_messages(self, messages: list[dict]) -> ReactResult:
+    def run_messages(
+        self,
+        messages: list[dict],
+        *,
+        working_state: Any = None,
+        defaults: Mapping[str, Any] | None = None,
+    ) -> ReactResult:
+        """与 ``PlanExecuteEngine`` 保持同一入口签名。
+
+        - ``working_state`` 由上层传入以统一接口（ReAct 不使用槽位，忽略它）
+        - ``defaults`` 作为**会话级环境参数**注入每次工具调用（如 ``user_id``）
+        """
+
         started = time.perf_counter()
         messages = [dict(message) for message in messages]
         tool_schemas = self.registry.schemas()
@@ -139,7 +151,7 @@ class ReactEngine:
                 continue
             previous_keys = call_keys
 
-            results = self.executor.execute_all(turn.tool_calls)
+            results = self.executor.execute_all(turn.tool_calls, defaults=defaults)
             for call, tool_result in zip(turn.tool_calls, results):
                 result.tool_calls.append(call.tool_name)
                 result.arguments.setdefault(call.tool_name, []).append(call.arguments)

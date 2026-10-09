@@ -71,7 +71,13 @@ def runtime_engine(runtime: Any, *, seed_memory: bool = True) -> Any:
                     )
                 )
 
-        outcome = runtime.chat(case.input, user_id=user_id, session_id=case.case_id)
+        # 按用例声明的 mode 选引擎（react / plan）
+        outcome = runtime.chat(
+            case.input,
+            user_id=user_id,
+            session_id=case.case_id,
+            mode=getattr(case, "mode", None),
+        )
         run_outcome = to_run_outcome(outcome.result)
         run_outcome.memory_actions = dict(outcome.memory_actions)
         run_outcome.structured_output_ok = not outcome.memory_extraction_failed

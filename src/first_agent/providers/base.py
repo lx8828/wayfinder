@@ -51,3 +51,17 @@ class CalendarProvider(Protocol):
     def get_events(self, user_id: str, date: str) -> dict[str, Any]:
         """返回 ``CalendarResult`` 所需的字段（date/events）。"""
         ...
+
+
+@runtime_checkable
+class DateTimeProvider(Protocol):
+    def resolve(self, expression: str, timezone_name: str = "Asia/Shanghai") -> dict[str, Any]:
+        """把「明天下午」这类表达式解析为具体日期，返回 ``ResolvedTimeResult`` 所需字段。"""
+        ...
+
+
+@runtime_checkable
+class TravelProvider(Protocol):
+    def estimate(self, origin: str, destination: str, mode: str) -> dict[str, Any]:
+        """返回 ``TravelTimeResult`` 所需的字段（duration_minutes 等）。"""
+        ...

@@ -3,7 +3,24 @@
 工具**不实现网络访问细节**，外部 IO 一律交给 ``providers``。
 """
 
-from first_agent.tools.builtin.time import TimeInput, TimeResult, make_time_tool
+from first_agent.tools.builtin.calendar import (
+    CalendarInput,
+    CalendarResult,
+    make_calendar_tool,
+)
+from first_agent.tools.builtin.time import (
+    ResolveTimeInput,
+    ResolvedTimeResult,
+    TimeInput,
+    TimeResult,
+    make_resolve_datetime_tool,
+    make_time_tool,
+)
+from first_agent.tools.builtin.travel import (
+    TravelTimeInput,
+    TravelTimeResult,
+    make_travel_time_tool,
+)
 from first_agent.tools.builtin.weather import (
     WeatherInput,
     WeatherResult,
@@ -14,7 +31,16 @@ __all__ = [
     "make_time_tool",
     "TimeInput",
     "TimeResult",
+    "make_resolve_datetime_tool",
+    "ResolveTimeInput",
+    "ResolvedTimeResult",
     "make_weather_tool",
     "WeatherInput",
     "WeatherResult",
+    "make_travel_time_tool",
+    "TravelTimeInput",
+    "TravelTimeResult",
+    "make_calendar_tool",
+    "CalendarInput",
+    "CalendarResult",
 ]

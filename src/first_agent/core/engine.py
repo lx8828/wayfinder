@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 
 from first_agent.core.context import RECENT_TURNS_KEEP, ContextBuilder, ContextInputs
 from first_agent.core.session import SessionRef, SessionResolver, SessionStore
@@ -22,7 +22,15 @@ from first_agent.runtime.react import ReactResult
 
 
 class _Engine(Protocol):
-    def run_messages(self, messages: list[dict]) -> ReactResult: ...
+    """``ReactEngine`` 与 ``PlanExecuteEngine`` 的共同入口。"""
+
+    def run_messages(
+        self,
+        messages: list[dict],
+        *,
+        working_state: Any = None,
+        defaults: Mapping[str, Any] | None = None,
+    ) -> ReactResult: ...
 
 
 @dataclass
@@ -30,6 +38,7 @@ class ChatOutcome:
     result: ReactResult
     ref: SessionRef
     turn_index: int
+    mode: str = "react"
     # 本轮后置记忆动作：{key: add/keep/update/skip}，供评测的 expected_memory_delta 对比
     memory_actions: dict[str, str] = field(default_factory=dict)
     memory_dropped: list[dict[str, Any]] = field(default_factory=list)
@@ -48,10 +57,14 @@ class ToolAgentRuntime:
         context_builder: ContextBuilder | None = None,
         memory_service: Any = None,
         remember_after_turn: bool = True,
+        plan_engine: _Engine | None = None,
+        default_mode: str = "react",
         tracer: Any = None,
         recent_turns_keep: int = RECENT_TURNS_KEEP,
     ) -> None:
         self.engine = engine
+        self.plan_engine = plan_engine
+        self.default_mode = default_mode
         self.sessions = sessions
         self.memories = memories
         self.resolver = resolver or SessionResolver()
@@ -68,7 +81,9 @@ class ToolAgentRuntime:
         *,
         user_id: str | None = None,
         session_id: str | None = None,
+        mode: str | None = None,
     ) -> ChatOutcome:
+        engine, selected_mode = self._select_engine(mode)
         ref = self.resolver.resolve(user_id=user_id, session_id=session_id)
         self.sessions.ensure_session(ref)
 
@@ -87,8 +102,13 @@ class ToolAgentRuntime:
             )
         )
 
-        result = self.engine.run_messages(messages)
+        result = engine.run_messages(
+            messages,
+            working_state=working_state,
+            defaults=self._engine_defaults(profile),
+        )
 
+        # 引擎可能原地更新了 working_state（Plan 会写槽位与 pending_slots）
         self.sessions.save_working_state(working_state)
         turn_index = self.sessions.append_turn(
             ref,
@@ -97,7 +117,9 @@ class ToolAgentRuntime:
             messages=result.messages,
         )
 
-        outcome = ChatOutcome(result=result, ref=ref, turn_index=turn_index)
+        outcome = ChatOutcome(
+            result=result, ref=ref, turn_index=turn_index, mode=selected_mode
+        )
         if self.memory_service is not None and self.remember_after_turn:
             (
                 outcome.memory_actions,
@@ -105,6 +127,23 @@ class ToolAgentRuntime:
                 outcome.memory_extraction_failed,
             ) = self._remember(user_input, ref.user_id)
         return outcome
+
+    def _select_engine(self, mode: str | None) -> tuple[_Engine, str]:
+        selected = (mode or self.default_mode or "react").strip().lower()
+        if selected == "plan":
+            if self.plan_engine is None:
+                raise ValueError("未配置 Plan-Execute 引擎，无法使用 mode='plan'")
+            return self.plan_engine, selected
+        if selected != "react":
+            raise ValueError(f"未知对话模式：{mode!r}（仅支持 react / plan）")
+        return self.engine, selected
+
+    @staticmethod
+    def _engine_defaults(profile: Any) -> dict[str, Any]:
+        """会话级环境参数：目前注入用户时区（工具里显式传参仍然优先）。"""
+
+        timezone = getattr(profile, "timezone", None)
+        return {"timezone": timezone} if timezone else {}
 
     def _remember(
         self, user_input: str, user_id: str

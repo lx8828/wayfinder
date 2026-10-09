@@ -13,7 +13,8 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
-from typing import Any, Sequence
+from functools import partial
+from typing import Any, Mapping, Sequence
 
 from pydantic import ValidationError
 
@@ -56,13 +57,24 @@ class ToolExecutor:
         self._pool: ThreadPoolExecutor | None = None
 
     # -- 单次执行 ---------------------------------------------------------
-    def execute(self, call: ToolCall) -> ToolResult:
+    def execute(
+        self, call: ToolCall, *, defaults: Mapping[str, Any] | None = None
+    ) -> ToolResult:
+        """``defaults`` 提供**会话级环境参数**（如 ``user_id``）。
+
+        显式参数优先于 defaults：合并顺序为 ``defaults`` → ``call.arguments``。
+        这样 Plan 里的 ``get_calendar_events`` 无需让模型凭空编出 ``user_id``。
+        """
+
         spec = self.registry.get(call.tool_name)
         if spec is None:
             return self._failure(call, "unknown_tool", f"未注册的工具：{call.tool_name}")
 
+        arguments: dict[str, Any] = dict(defaults or {})
+        arguments.update(call.arguments)
+
         try:
-            payload = spec.input_model.model_validate(call.arguments)
+            payload = spec.input_model.model_validate(arguments)
         except ValidationError as exc:
             return self._failure(call, "invalid_arguments", _compact(exc))
 
@@ -138,12 +150,15 @@ class ToolExecutor:
         )
 
     # -- 并发执行 ---------------------------------------------------------
-    def execute_all(self, calls: Sequence[ToolCall]) -> list[ToolResult]:
+    def execute_all(
+        self, calls: Sequence[ToolCall], *, defaults: Mapping[str, Any] | None = None
+    ) -> list[ToolResult]:
         """有界并发执行一批调用，**保持输入顺序**返回结果。"""
 
         if len(calls) <= 1:
-            return [self.execute(call) for call in calls]
-        return list(self._get_pool().map(self.execute, calls))
+            return [self.execute(call, defaults=defaults) for call in calls]
+        runner = partial(self.execute, defaults=defaults)
+        return list(self._get_pool().map(runner, calls))
 
     # -- 生命周期 ---------------------------------------------------------
     def close(self) -> None:
