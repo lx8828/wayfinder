@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+from first_agent.core.budget import DEFAULT_BUDGET_MS
 from first_agent.core.client import LLMClient
 from first_agent.evals.scripted import ScriptedLLM
 from first_agent.providers import (
@@ -48,10 +49,25 @@ def make_registry(*, weather_failures=None, calendar_events=None, datetime_failu
     return registry
 
 
-def build_engine(script, *, registry=None, max_steps=5, tracer=None):
+def build_engine(
+    script,
+    *,
+    registry=None,
+    max_steps=5,
+    tracer=None,
+    budget_ms=DEFAULT_BUDGET_MS,
+    clock=None,
+    fallback_engine=None,
+):
     sdk = ScriptedLLM(script)
     engine = PlanExecuteEngine(
-        LLMClient(sdk), registry or make_registry(), max_steps=max_steps, tracer=tracer
+        LLMClient(sdk),
+        registry or make_registry(),
+        max_steps=max_steps,
+        budget_ms=budget_ms,
+        clock=clock,
+        fallback_engine=fallback_engine,
+        tracer=tracer,
     )
     return engine, sdk
 

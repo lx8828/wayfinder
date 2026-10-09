@@ -32,6 +32,9 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--session", default="default", help="会话 ID（S4 起用于会话持久化）")
     chat.add_argument("--show-thought", action="store_true", help="在回答前打印 Thought")
     chat.add_argument("--show-memory", action="store_true", help="在回答后打印本轮记忆动作")
+    chat.add_argument(
+        "--budget-ms", type=int, default=60_000, help="单次 run 耗时预算（毫秒，默认 60000）"
+    )
     chat.add_argument("--no-trace", action="store_true", help="关闭 Trace 写入")
 
     for name, phase in _PENDING.items():
@@ -130,6 +133,7 @@ def _run_chat(args: argparse.Namespace) -> int:
             sessions=SessionStore(db),
             memories=memories,
             memory_service=MemoryService(client, memories, tracer=tracer),
+            budget_ms=args.budget_ms,
             tracer=tracer,
         )
         tracer.start_run(
@@ -140,9 +144,11 @@ def _run_chat(args: argparse.Namespace) -> int:
         )
 
     result = outcome.result
-    if args.show_thought and result.thoughts:
+    # 统一读取：PlanResult 与 ReactResult 都暴露 thoughts（降级到 ReAct 时同样有值）
+    thoughts = list(getattr(result, "thoughts", None) or [])
+    if args.show_thought and thoughts:
         print("--- Thought ---")
-        for index, thought in enumerate(result.thoughts, 1):
+        for index, thought in enumerate(thoughts, 1):
             print(f"[{index}] {thought}")
         print("---------------")
 
@@ -161,6 +167,8 @@ def _run_chat(args: argparse.Namespace) -> int:
         steps=result.steps,
         tool_calls=result.tool_calls,
         memory_actions=outcome.memory_actions,
+        budget_spent_ms=outcome.budget_spent_ms,
+        degraded_to=getattr(result, "degraded_to", None),
     )
     # need_info（追问）是正常结果，不是错误
     return 0 if result.status in {"success", "need_info"} else 1

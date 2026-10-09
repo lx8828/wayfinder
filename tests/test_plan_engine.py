@@ -233,53 +233,45 @@ def test_slots_merge_across_turns_without_resetting():
 # -- 计划被拒与失败降级 ----------------------------------------------------
 
 
+BAD_TOOL_PLAN = {
+    "need_info": [],
+    "steps": [{"id": 0, "tool": "get_traffic", "arguments": {}, "depends_on": []}],
+}
+
+CYCLIC_PLAN = {
+    "need_info": [],
+    "steps": [
+        {
+            "id": 0,
+            "tool": "get_weather",
+            "arguments": {"city": "重庆", "date": "$steps.1.date"},
+            "depends_on": [1],
+        },
+        {
+            "id": 1,
+            "tool": "resolve_datetime",
+            "arguments": {"expression": "明天"},
+            "depends_on": [0],
+        },
+    ],
+}
+
+
 def test_unknown_tool_makes_plan_invalid_and_executes_nothing():
-    engine, _ = build_engine(
-        [
-            json_obj({}),
-            json_obj(
-                {
-                    "need_info": [],
-                    "steps": [
-                        {"id": 0, "tool": "get_traffic", "arguments": {}, "depends_on": []}
-                    ],
-                }
-            ),
-        ]
-    )
+    """重规划后仍非法 → 拒绝执行（脚本第 3 步即重规划结果）。"""
+
+    engine, sdk = build_engine([json_obj({}), json_obj(BAD_TOOL_PLAN), json_obj(BAD_TOOL_PLAN)])
 
     result = engine.run_messages(user_messages("路况怎么样"))
 
     assert result.status == "invalid_plan"
     assert result.tool_calls == []
     assert [problem.kind for problem in result.plan_problems] == ["unknown_tool"]
+    assert len(sdk.calls) == 3  # 槽位 + 计划 + 一次重规划
 
 
 def test_cyclic_plan_is_rejected():
-    engine, _ = build_engine(
-        [
-            json_obj({}),
-            json_obj(
-                {
-                    "need_info": [],
-                    "steps": [
-                        {
-                            "id": 0,
-                            "tool": "get_weather",
-                            "arguments": {"city": "重庆", "date": "$steps.1.date"},
-                            "depends_on": [1],
-                        },
-                        {
-                            "id": 1,
-                            "tool": "resolve_datetime",
-                            "arguments": {"expression": "明天"},
-                            "depends_on": [0],
-                        },
-                    ],
-                }
-            ),
-        ]
-    )
+    engine, _ = build_engine([json_obj({}), json_obj(CYCLIC_PLAN), json_obj(CYCLIC_PLAN)])
 
     result = engine.run_messages(user_messages("明天天气"))
 
@@ -292,8 +284,9 @@ def test_plan_exceeding_max_steps_is_rejected():
         {"id": index, "tool": "get_current_time", "arguments": {}, "depends_on": []}
         for index in range(4)
     ]
+    oversized = {"need_info": [], "steps": steps}
     engine, _ = build_engine(
-        [json_obj({}), json_obj({"need_info": [], "steps": steps})], max_steps=3
+        [json_obj({}), json_obj(oversized), json_obj(oversized)], max_steps=3
     )
 
     result = engine.run_messages(user_messages("现在几点"))

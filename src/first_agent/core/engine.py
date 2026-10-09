@@ -13,8 +13,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
+from first_agent.core.budget import DEFAULT_BUDGET_MS, RunBudget
 from first_agent.core.context import RECENT_TURNS_KEEP, ContextBuilder, ContextInputs
 from first_agent.core.session import SessionRef, SessionResolver, SessionStore
 from first_agent.memory.store import MemoryStore
@@ -44,6 +45,8 @@ class ChatOutcome:
     memory_dropped: list[dict[str, Any]] = field(default_factory=list)
     # 记忆抽取的结构化输出是否失败（用于评测的 Structured Output Validity Rate）
     memory_extraction_failed: bool = False
+    # 本轮实际耗时（用于观察是否逼近预算上限）
+    budget_spent_ms: int = 0
 
 
 class ToolAgentRuntime:
@@ -59,12 +62,16 @@ class ToolAgentRuntime:
         remember_after_turn: bool = True,
         plan_engine: _Engine | None = None,
         default_mode: str = "react",
+        budget_ms: int = DEFAULT_BUDGET_MS,
+        clock: Callable[[], float] | None = None,
         tracer: Any = None,
         recent_turns_keep: int = RECENT_TURNS_KEEP,
     ) -> None:
         self.engine = engine
         self.plan_engine = plan_engine
         self.default_mode = default_mode
+        self.budget_ms = budget_ms
+        self.clock = clock
         self.sessions = sessions
         self.memories = memories
         self.resolver = resolver or SessionResolver()
@@ -84,6 +91,8 @@ class ToolAgentRuntime:
         mode: str | None = None,
     ) -> ChatOutcome:
         engine, selected_mode = self._select_engine(mode)
+        # 预算覆盖整轮（引擎 + 后置记忆），由门面统一持有（design.md 14.1）
+        budget = RunBudget(budget_ms=self.budget_ms, clock=self.clock)
         ref = self.resolver.resolve(user_id=user_id, session_id=session_id)
         self.sessions.ensure_session(ref)
 
@@ -106,6 +115,7 @@ class ToolAgentRuntime:
             messages,
             working_state=working_state,
             defaults=self._engine_defaults(profile),
+            budget=budget,
         )
 
         # 引擎可能原地更新了 working_state（Plan 会写槽位与 pending_slots）
@@ -118,14 +128,25 @@ class ToolAgentRuntime:
         )
 
         outcome = ChatOutcome(
-            result=result, ref=ref, turn_index=turn_index, mode=selected_mode
+            result=result,
+            ref=ref,
+            turn_index=turn_index,
+            mode=selected_mode,
+            budget_spent_ms=budget.spent_ms,
         )
+
         if self.memory_service is not None and self.remember_after_turn:
-            (
-                outcome.memory_actions,
-                outcome.memory_dropped,
-                outcome.memory_extraction_failed,
-            ) = self._remember(user_input, ref.user_id)
+            if budget.exhausted:
+                # 预算已耗尽：不再发起额外 LLM 调用（design.md 14.1「停止发起新调用」）
+                self._trace("memory_skipped_budget", spent_ms=budget.spent_ms)
+            else:
+                (
+                    outcome.memory_actions,
+                    outcome.memory_dropped,
+                    outcome.memory_extraction_failed,
+                ) = self._remember(user_input, ref.user_id)
+            outcome.budget_spent_ms = budget.spent_ms
+
         return outcome
 
     def _select_engine(self, mode: str | None) -> tuple[_Engine, str]:

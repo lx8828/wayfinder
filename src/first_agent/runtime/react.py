@@ -15,8 +15,15 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
+from first_agent.core.budget import (
+    DEFAULT_BUDGET_MS,
+    BudgetExceeded,
+    RunBudget,
+    build_partial_answer,
+    check_budget,
+)
 from first_agent.core.client import LLMClient, LLMError
 from first_agent.core.context import DEFAULT_SYSTEM_PROMPT
 from first_agent.schemas.tool import ToolCall, ToolResult
@@ -55,6 +62,8 @@ class ReactEngine:
         max_steps: int = DEFAULT_MAX_STEPS,
         tracer: Any = None,
         max_thought_chars: int = MAX_THOUGHT_CHARS,
+        budget_ms: int = DEFAULT_BUDGET_MS,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         if max_steps < 1:
             raise ValueError("max_steps 至少为 1")
@@ -65,6 +74,8 @@ class ReactEngine:
         self.max_steps = max_steps
         self.tracer = tracer
         self.max_thought_chars = max_thought_chars
+        self.budget_ms = budget_ms
+        self.clock = clock
 
     # -- 入口 -------------------------------------------------------------
     def run(self, user_input: str, *, history: Sequence[dict] | None = None) -> ReactResult:
@@ -87,14 +98,17 @@ class ReactEngine:
         *,
         working_state: Any = None,
         defaults: Mapping[str, Any] | None = None,
+        budget: RunBudget | None = None,
     ) -> ReactResult:
         """与 ``PlanExecuteEngine`` 保持同一入口签名。
 
         - ``working_state`` 由上层传入以统一接口（ReAct 不使用槽位，忽略它）
         - ``defaults`` 作为**会话级环境参数**注入每次工具调用（如 ``user_id``）
+        - ``budget`` 由上层共享以覆盖整轮；未传则本引擎自建（design.md 14.1）
         """
 
         started = time.perf_counter()
+        budget = budget or RunBudget(budget_ms=self.budget_ms, clock=self.clock)
         messages = [dict(message) for message in messages]
         tool_schemas = self.registry.schemas()
         result = ReactResult()
@@ -102,6 +116,12 @@ class ReactEngine:
 
         for step in range(1, self.max_steps + 1):
             result.steps = step
+
+            exceeded = check_budget(budget, "llm_call")
+            if exceeded is not None:
+                self._degrade_on_budget(result, exceeded, budget)
+                break
+
             try:
                 turn = self.client.chat_turn(messages, tools=tool_schemas)
             except LLMError as exc:
@@ -151,6 +171,23 @@ class ReactEngine:
                 continue
             previous_keys = call_keys
 
+            exceeded = check_budget(budget, "tool_call")
+            if exceeded is not None:
+                # 必须补齐 tool 消息：否则历史里的 assistant(tool_calls) 缺少配对响应，
+                # 下一轮回放会被真实 API 拒绝（协议错误）
+                for call in turn.tool_calls:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.call_id,
+                            "content": _error_observation(
+                                "budget_exceeded", "耗时预算耗尽，该工具未执行"
+                            ),
+                        }
+                    )
+                self._degrade_on_budget(result, exceeded, budget)
+                break
+
             results = self.executor.execute_all(turn.tool_calls, defaults=defaults)
             for call, tool_result in zip(turn.tool_calls, results):
                 result.tool_calls.append(call.tool_name)
@@ -180,6 +217,26 @@ class ReactEngine:
         return result
 
     # -- 辅助 -------------------------------------------------------------
+    def _degrade_on_budget(
+        self, result: ReactResult, exceeded: BudgetExceeded, budget: RunBudget
+    ) -> None:
+        """预算耗尽的降级：可解释回答 + Trace（design.md 14.1）。"""
+
+        result.status = "budget_exceeded"
+        result.error = str(exceeded)
+        result.answer = build_partial_answer(
+            result.tool_results,
+            spent_ms=exceeded.spent_ms,
+            budget_ms=budget.budget_ms,
+            stage=exceeded.stage,
+        )
+        self._trace(
+            "run_budget_exceeded",
+            spent_ms=exceeded.spent_ms,
+            budget_ms=budget.budget_ms,
+            stage=exceeded.stage,
+        )
+
     @staticmethod
     def _assistant_message(thought: str | None, calls: Sequence[ToolCall]) -> dict:
         return {

@@ -4,7 +4,7 @@
 - 仓库：`first-agent`（本文档位于 `docs/design.md`，随代码一同版本化）
 - 版本：v0.4
 - 日期：2026-10-10
-- 状态：Proposed（S0–S6a 已实现，见 0.1）
+- 状态：Proposed（S0–S6b 已实现，见 0.1）
 - 术语：本文档版本为 v0.4；产品目标版本称 **v2**；旧手写实现称 **v1**（归入 `archive/handwritten_v1/`）
 - 目标：围绕 Agent 编排、原生工具调用、短期/长期记忆和离线评测，把项目二从功能 Demo 升级为可测试、可观测、可回归的 Agent Runtime
 
@@ -69,6 +69,8 @@
 | R11 | `ToolExecutor.execute(call, defaults=...)` 支持**会话级环境参数** | `get_calendar_events(user_id, ...)` 的 `user_id` 模型不可能知道；显式参数优先、defaults 兜底 | 11.2 / 8.2 |
 | R12 | `estimate_travel_time` 用**启发式实现**（`HeuristicTravelProvider`，距离 ÷ 速度） | 项目没有接实时路况 API；宁可给确定性实现并说明，也不假装有实时数据 | 11.5 |
 | R13 | 依赖失败的步骤**跳过**（`blocked_by_dependency`）而不是让整个 Plan 崩掉 | 一步失败就整体无回答，违背「失败可恢复」原则 | 8.3 |
+| R14 | 预算由**门面**创建并贯穿整轮；熔断时补齐 `tool` 消息；降级成功时清空 `error`；预算耗尽跳过记忆写入 | 分别对应：引擎各自计时会漏算记忆开销 / 缺配对消息会让历史回放被真实 API 拒绝 / 成功的降级会被评测误判为失败 | 8.2 / 14.1 |
+| R15 | 降级文案按「毫秒」如实显示小于 1 秒的预算 | `--budget-ms 1` 曾显示成「已达 1 秒」，与实际严重不符 | 14.1 |
 
 **实测发现（真实冒烟，S3–S4）**：DeepSeek 在带 `tool_calls` 的响应里**有时输出 `content`（Thought）、有时不输出**——同一模型对同类问题先后返回 `content=null` 与 `content="I'll check the current weather in Beijing for you."`。这确认了方案 A（Thought 可选）是唯一稳妥的选择。另注意 **Thought 语言不受输入语言约束**（中文输入得到英文 Thought），如需统一只能在 prompt 中显式要求。
 
@@ -231,6 +233,7 @@ TraceLogger
 src/first_agent/
 ├── core/
 │   ├── client.py          # ✅ LLM 客户端与 chat_json 状态机
+│   ├── budget.py          # ✅ 耗时预算与超预算降级（S6b）
 │   ├── context.py         # ✅ ContextBuilder（动态注入 + 字符预算）
 │   ├── db.py              # ✅ 通用 SQLite 封装（R7，无业务 schema）
 │   ├── session.py         # ✅ SessionStore / SessionResolver
@@ -276,7 +279,7 @@ src/first_agent/
 │   └── baseline.json      # ⏳ S7
 └── main.py                # ✅ CLI（chat --mode react）
 
-tests/                     # ✅ 331 个离线测试（无 API Key 可跑）
+tests/                     # ✅ 354 个离线测试（无 API Key 可跑）
 var/                       # ✅ 本地 SQLite 与 Trace（已 gitignore）
 
 scripts/
@@ -544,6 +547,17 @@ class Plan(BaseModel):
   显式参数优先，`defaults` 兜底，`user_id` 这类模型不可能知道的参数由此注入。
 - **依赖失败的步骤被跳过**（`blocked_by_dependency`）而非整体失败（R13）：
   其余步骤照常执行与汇总，失败原因通过 Observation 交给汇总环节。
+
+实现补充（S6b，失败恢复）：
+
+- **replan 只做一次**：校验失败 → 把「上一次计划 + 校验问题」回灌规划器再要一次；
+  仍不合法即降级，不做第二次重规划。
+- **降级到 ReAct**：Plan 生成失败（`chat_json` 校验不过）或重规划后仍不合法时，
+  若注入了 `fallback_engine` 则转交 ReAct，并保留其答案 / 工具轨迹 / Thought
+  （结果标记 `degraded_to="react"`）；未注入则退化为追问用户。
+- 降级成功时**清空 `error`**：否则一次成功的降级会被评测判成失败。
+- 工具层的 retry 仍由 `ToolExecutor` 负责（瞬时错误重试、非瞬时错误不重试），
+  Plan 层不重复实现重试。
 
 ### 8.3 多轮追问
 
@@ -942,6 +956,19 @@ effective_max_steps = min(case.max_steps or global_max_steps, hard_cap)
 
 不允许出现“预算耗尽但继续跑”或“静默抛异常”两种行为。
 
+实现补充（S6b）：
+
+- 预算由**门面**创建并贯穿整轮（引擎 + 后置记忆），引擎不再各自计时。
+- 检查点固定在「发起新调用之前」：ReAct 为 `llm_call` / `tool_call`；
+  Plan 为 `slot_extraction` / `plan` / `tool_call` / `summary`。
+- 降级入口只有两处代码路径：`build_partial_answer()`（有 Observation 就列部分结果，
+  没有就给可解释提示）与 Plan 的 `_fallback_summary()`（工具已跑完但没预算做汇总时，
+  用确定性文本交付已有 Observation）。
+- 门面在预算耗尽后**跳过记忆写入**，不再发起额外 LLM 调用。
+- 熔断时**必须补齐 `tool` 消息**：否则被持久化的 `assistant(tool_calls)` 缺少配对响应，
+  下一轮回放会被真实 API 拒绝（协议错误）。
+- 文案如实报告耗时：小于 1 秒的预算按毫秒显示，不允许把 1ms 说成「1 秒」。
+
 ---
 
 ## 15. Trace 与隐私
@@ -1147,7 +1174,16 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 | need_info 写入 pending_slots | `tests/test_plan_engine.py::test_plan_mode_persists_pending_slots_through_runtime` | ✅ |
 | 会话参数注入（user_id） | `tests/test_plan_engine.py::test_ambient_user_id_is_injected_into_tools` | ✅ |
 | 依赖失败只阻塞下游 | `tests/test_plan_engine.py::test_failed_dependency_blocks_only_dependent_steps` | ✅ |
-| 超预算可解释退出 | `test_run_budget_exceeded` | ⏳ S6b |
+| 超预算可解释退出 | `tests/test_budget_recovery.py::test_run_budget_exceeded_stops_before_tool_and_explains` | ✅ |
+| 熔断后不再发起新调用 | `tests/test_budget_recovery.py::test_plan_budget_exceeded_before_planning` | ✅ |
+| 熔断保持消息协议完整 | `tests/test_budget_recovery.py::test_budget_break_keeps_message_protocol_valid` | ✅ |
+| 有 Observation 时给出部分结果 | `tests/test_budget_recovery.py::test_budget_exceeded_returns_partial_results_when_available` | ✅ |
+| 工具跑完但无预算汇总仍可交付 | `tests/test_budget_recovery.py::test_plan_budget_exceeded_at_summary_still_returns_observations` | ✅ |
+| 预算耗尽后跳过记忆写入 | `tests/test_budget_recovery.py::test_runtime_skips_memory_when_budget_is_exhausted` | ✅ |
+| Plan 只重规划一次 | `tests/test_budget_recovery.py::test_plan_gives_up_after_a_single_replan` | ✅ |
+| Plan 失败降级到 ReAct | `tests/test_budget_recovery.py::test_invalid_plan_degrades_to_react` | ✅ |
+| 降级成功不留失败痕迹 | `tests/test_budget_recovery.py::test_invalid_plan_degrades_to_react`（断言 `error is None`） | ✅ |
+| 毫秒级预算如实显示 | `tests/test_budget_recovery.py::test_partial_answer_reports_milliseconds_for_sub_second_budget` | ✅ |
 | 跨会话记忆恢复 | `tests/test_memory_store.py` + `tests/test_runtime_engine.py` | ✅（评测用例样本待 S7 扩到 30～40 条） |
 
 ---
@@ -1222,7 +1258,7 @@ v2 只建立在 `first-agent/`。
 
 ## 19. 里程碑
 
-> 实现进度（截至本文档 v0.4）：**Phase 0 ✅ / Phase 1 🟡 / Phase 2 ✅ / Phase 3a ✅ / Phase 3b ⏳ / Phase 4 🟡 / Phase 5 ⏳**
+> 实现进度（截至本文档 v0.4）：**Phase 0 ✅ / Phase 1 🟡 / Phase 2 ✅ / Phase 3a ✅ / Phase 3b ✅ / Phase 4 🟡 / Phase 5 ⏳**
 >
 > 实际执行被拆成 S0～S8 若干小步，每步一个 commit + 一次全量测试。其中 **S2「护栏提前」** 把 Phase 4
 > 的测试骨架（ScriptedLLM / Fake provider / runner / metrics / 回归门禁）提前实现，理由：没有护栏
@@ -1234,7 +1270,7 @@ v2 只建立在 `first-agent/`。
 | Phase 1 最小可运行 v2 | 🟡 | S1 契约层 + S3 ReAct；**README 骨架未做**，并入 Phase 5 |
 | Phase 2 工具与动态记忆 | ✅ | S3 工具执行器 + S4 SessionStore / 动态注入 / 确定性 add-update-keep + S5 LLM 抽取与关系裁决 |
 | Phase 3a Plan 结构与依赖 | ✅ | S6a |
-| Phase 3b 失败恢复 | ⏳ | S6b |
+| Phase 3b 失败恢复 | ✅ | S6b |
 | Phase 4 评测与回归 | 🟡 | 护栏已提前到 S2；用例仅 5 条种子，`baseline.json` 与 CI 门禁待 S7 |
 | Phase 5 文档与可选优化 | ⏳ | S8（含 README 重写） |
 
@@ -1287,12 +1323,17 @@ uv run first-agent chat --mode react --user demo --session s1 "北京今天天�
 「明天下午想去公园」，真实 DeepSeek 一次生成带 `$steps.0.date` 引用与正确 `depends_on`
 的合法计划，且 `reason` 中明确引用了迁移来的 `home_city`。
 
-### Phase 3b ⏳：失败恢复，0.8 天
+### Phase 3b ✅：失败恢复，0.8 天
 
 - retry、fallback 和一次 replan。
 - 超预算熔断与可解释退出。
 
 退出条件：工具失败/超时/依赖环用例均走结构化降级路径，不中断进程。
+
+**已满足**：工具失败（`unavailable`）、依赖失败（`blocked_by_dependency`）、依赖环与
+未知工具（重规划一次后 `invalid_plan`）均走结构化降级；60s 预算熔断有可解释退出。
+另用真实 API 实测 `--budget-ms 1`：Trace 中 `run_budget_exceeded{stage:"llm_call"}`，
+**LLM 调用数为 0**（一分钱没花），并跳过记忆写入，返回可解释降级回答、退出码 1。
 
 ### Phase 4 🟡：评测与回归，1.5 天
 

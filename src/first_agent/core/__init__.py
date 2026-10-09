@@ -9,6 +9,13 @@
     from first_agent.core.engine import ToolAgentRuntime
 """
 
+from first_agent.core.budget import (
+    DEFAULT_BUDGET_MS,
+    BudgetExceeded,
+    RunBudget,
+    build_partial_answer,
+    check_budget,
+)
 from first_agent.core.client import JSONValidationError, LLMClient, LLMError
 from first_agent.core.context import (
     DEFAULT_SYSTEM_PROMPT,
@@ -29,6 +36,12 @@ from first_agent.core.tracing import (
 )
 
 __all__ = [
+    # budget
+    "RunBudget",
+    "BudgetExceeded",
+    "DEFAULT_BUDGET_MS",
+    "check_budget",
+    "build_partial_answer",
     # client
     "LLMClient",
     "LLMError",
