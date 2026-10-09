@@ -2,6 +2,21 @@
 
 一个基于 Python 的智能出行助手 Agent，支持 **ReAct** 和 **Plan-Execute** 两种模式，具备**长期记忆**能力，能根据用户历史偏好提供个性化出行建议。
 
+## 🚧 v2 重写进行中
+
+本项目正在从 v1 手写实现重写为 **v2 Tool Agent Runtime**。
+
+```bash
+uv sync
+uv run pytest                          # 179 个离线测试，无需 API Key
+uv run first-agent chat "北京今天天气"   # 需要 .env 中的 DEEPSEEK_API_KEY / QWEATHER_API_KEY
+```
+
+- 设计文档：[`docs/design.md`](docs/design.md)（v0.4，含 R1–R7 实现偏离登记与逐阶段进度）
+- v1 冻结快照：Git tag `v1-handwritten` 与 [`archive/handwritten_v1/ARCHIVE.md`](archive/handwritten_v1/ARCHIVE.md)
+
+> ⚠️ 下文「功能特性 / 项目结构 / 架构设计」描述的是 **v1**；v2 主线代码在 `src/first_agent/`，本 README 将在 Phase 5 重写。
+
 ## ✨ 功能特性
 
 - 🌤️ **天气查询**：支持国内主要城市的实况天气
