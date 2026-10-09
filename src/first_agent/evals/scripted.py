@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -95,7 +96,8 @@ class ScriptedLLM:
 
     # -- SDK 接口 ---------------------------------------------------------
     def _create(self, **kwargs):
-        self.calls.append(kwargs)
+        # 深拷贝请求快照：调用方之后可能继续 mutate messages，不能让它污染记录
+        self.calls.append(copy.deepcopy(kwargs))
         step_index = len(self.calls)
         step = self._script.pop(0) if self._script else TextStep(self.default_text)
 

@@ -13,6 +13,7 @@ from first_agent.providers.base import (
     WeatherProvider,
 )
 from first_agent.providers.fake import FakeCalendarProvider, FakeWeatherProvider
+from first_agent.providers.weather import QWeatherProvider
 
 __all__ = [
     "WeatherProvider",
@@ -23,4 +24,5 @@ __all__ = [
     "ProviderUnavailable",
     "FakeWeatherProvider",
     "FakeCalendarProvider",
+    "QWeatherProvider",
 ]
