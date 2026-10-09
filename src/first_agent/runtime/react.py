@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from first_agent.core.client import LLMClient, LLMError
-from first_agent.core.context import DEFAULT_SYSTEM_PROMPT, build_messages
+from first_agent.core.context import DEFAULT_SYSTEM_PROMPT
 from first_agent.schemas.tool import ToolCall, ToolResult
 from first_agent.tools.executor import ToolExecutor
 from first_agent.tools.registry import ToolRegistry
@@ -66,10 +66,24 @@ class ReactEngine:
         self.tracer = tracer
         self.max_thought_chars = max_thought_chars
 
-    # -- 主循环 -----------------------------------------------------------
+    # -- 入口 -------------------------------------------------------------
     def run(self, user_input: str, *, history: Sequence[dict] | None = None) -> ReactResult:
+        """独立入口：自行组装最小上下文（**不含**长期记忆注入）。
+
+        需要动态记忆注入时走 ``core.engine.ToolAgentRuntime``，由它把组装好的
+        消息交给 :meth:`run_messages`。
+        """
+
+        messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
+        if history:
+            messages.extend(dict(message) for message in history)
+        messages.append({"role": "user", "content": user_input})
+        return self.run_messages(messages)
+
+    # -- 主循环 -----------------------------------------------------------
+    def run_messages(self, messages: list[dict]) -> ReactResult:
         started = time.perf_counter()
-        messages = build_messages(user_input, system_prompt=self.system_prompt, history=history)
+        messages = [dict(message) for message in messages]
         tool_schemas = self.registry.schemas()
         result = ReactResult()
         previous_keys: list[tuple[str, str]] | None = None
@@ -143,13 +157,13 @@ class ReactEngine:
 
         result.latency_ms = int((time.perf_counter() - started) * 1000)
         result.messages = messages
+        # 只记元信息：完整答案由 run_end 记录一次，避免 Trace 体积翻倍
         self._trace(
             "react_answer",
             status=result.status,
             steps=result.steps,
             tool_calls=result.tool_calls,
             latency_ms=result.latency_ms,
-            answer=result.answer,
         )
         return result
 
@@ -173,9 +187,10 @@ class ReactEngine:
         }
 
     def _trace_thought(self, thought: str | None, step: int) -> None:
-        if self.tracer is None:
+        # 没有 Thought 时不留空事件（避免 Trace 噪音）
+        if self.tracer is None or not thought:
             return
-        text = thought or ""
+        text = thought
         self._trace(
             "react_thought",
             step=step,

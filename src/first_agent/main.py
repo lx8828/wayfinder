@@ -64,11 +64,17 @@ def _run_chat(args: argparse.Namespace) -> int:
         return 2
 
     # 延迟导入：让 --version / --help 不依赖 openai / httpx / dotenv
+    from pathlib import Path
+
     from dotenv import load_dotenv
     from openai import OpenAI
 
     from first_agent.core.client import LLMClient
+    from first_agent.core.db import Database
+    from first_agent.core.engine import ToolAgentRuntime
+    from first_agent.core.session import SessionStore
     from first_agent.core.tracing import TraceLogger
+    from first_agent.memory.store import MemoryStore
     from first_agent.providers import QWeatherProvider
     from first_agent.runtime import ReactEngine
     from first_agent.tools.builtin import make_time_tool, make_weather_tool
@@ -101,11 +107,20 @@ def _run_chat(args: argparse.Namespace) -> int:
     else:
         print("[first-agent] 未配置 QWEATHER_API_KEY，本轮不注册 get_weather。", file=sys.stderr)
 
-    engine = ReactEngine(client, registry, tracer=tracer)
-    tracer.start_run(user_id=args.user, session_id=args.session, mode="react")
+    db_path = Path(os.getenv("FIRST_AGENT_DB", "var/agent.db"))
+    db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    result = engine.run(args.message)
+    with Database(db_path) as db:
+        runtime = ToolAgentRuntime(
+            engine=ReactEngine(client, registry, tracer=tracer),
+            sessions=SessionStore(db),
+            memories=MemoryStore(db),
+            tracer=tracer,
+        )
+        tracer.start_run(user_id=args.user, session_id=args.session, mode="react")
+        outcome = runtime.chat(args.message, user_id=args.user, session_id=args.session)
 
+    result = outcome.result
     if args.show_thought and result.thoughts:
         print("--- Thought ---")
         for index, thought in enumerate(result.thoughts, 1):

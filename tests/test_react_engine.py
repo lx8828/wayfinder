@@ -221,3 +221,51 @@ def test_react_engine_passes_no_tool_case_through_harness():
 
     assert check.passed is True
     assert check.outcome.tool_calls == []
+
+
+# -- Trace 事件质量（真实冒烟发现的两个问题） ------------------------------
+
+
+class _Recorder:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def log(self, kind, **payload):
+        self.events.append((kind, payload))
+
+    def kinds(self) -> list[str]:
+        return [kind for kind, _ in self.events]
+
+    def payload_of(self, kind: str) -> dict:
+        return next(payload for event, payload in self.events if event == kind)
+
+
+def test_empty_thought_is_not_traced():
+    recorder = _Recorder()
+    engine, _ = build_engine([tool("get_weather", {"city": "北京"}), text("晴")], tracer=recorder)
+
+    engine.run("北京天气")
+
+    assert "react_thought" not in recorder.kinds()
+
+
+def test_present_thought_is_traced():
+    recorder = _Recorder()
+    engine, _ = build_engine(
+        [tool("get_weather", {"city": "北京"}, thought="先查天气"), text("晴")], tracer=recorder
+    )
+
+    engine.run("北京天气")
+
+    assert recorder.payload_of("react_thought")["thought"] == "先查天气"
+
+
+def test_react_answer_does_not_duplicate_final_answer():
+    recorder = _Recorder()
+    engine, _ = build_engine([text("你好")], tracer=recorder)
+
+    engine.run("你好")
+
+    answer_event = recorder.payload_of("react_answer")
+    assert "answer" not in answer_event  # 完整答案只由 run_end 记录一次
+    assert answer_event["status"] == "success"

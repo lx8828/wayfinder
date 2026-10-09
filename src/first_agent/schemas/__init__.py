@@ -12,6 +12,7 @@ from first_agent.schemas.memory import (
     MemoryCategory,
     MemoryRelation,
     MemoryRelationKind,
+    UserProfile,
     decide_action,
 )
 from first_agent.schemas.plan import (
@@ -50,6 +51,7 @@ __all__ = [
     "RELATIONS",
     "RELATION_TO_ACTION",
     "decide_action",
+    "UserProfile",
     # session
     "WorkingState",
     "SessionSummary",

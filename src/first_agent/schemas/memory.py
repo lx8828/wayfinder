@@ -8,7 +8,8 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from dataclasses import dataclass, field
+from typing import Literal, Mapping
 
 from pydantic import BaseModel, Field
 
@@ -51,3 +52,47 @@ def decide_action(relation: str) -> str:
     """
 
     return RELATION_TO_ACTION.get(relation, "skip")
+
+
+@dataclass(frozen=True)
+class UserProfile:
+    """长期记忆的**只读视图**（design.md 12.1）。
+
+    记忆本身是 KV，``home_city`` 是 key 而不是对象属性；需要 typed 访问时
+    用本视图，避免把结构假设写进存储层。
+    """
+
+    memories: Mapping[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_memories(cls, memories: Mapping[str, str]) -> "UserProfile":
+        return cls(dict(memories))
+
+    def get(self, key: str, default: str | None = None) -> str | None:
+        return self.memories.get(key, default)
+
+    @property
+    def home_city(self) -> str | None:
+        return self.memories.get("home_city")
+
+    @property
+    def user_name(self) -> str | None:
+        return self.memories.get("user_name")
+
+    @property
+    def timezone(self) -> str | None:
+        return self.memories.get("timezone")
+
+    @property
+    def transport_mode(self) -> str | None:
+        return self.memories.get("transport_mode")
+
+    @property
+    def long_term_plan(self) -> str | None:
+        return self.memories.get("long_term_plan")
+
+    def is_empty(self) -> bool:
+        return not self.memories
+
+    def as_items(self) -> list[tuple[str, str]]:
+        return sorted(self.memories.items())
