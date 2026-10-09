@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智能出行助手</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #f5f5f5;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .header {
+            background: #4f46e5;
+            color: white;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .header h1 { font-size: 18px; font-weight: 600; }
+        .header .controls { display: flex; gap: 12px; align-items: center; }
+        .header select {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 6px;
+            background: rgba(255,255,255,0.2);
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .header select option { color: #333; }
+        .header button {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 6px;
+            background: rgba(255,255,255,0.2);
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .header button:hover { background: rgba(255,255,255,0.3); }
+        
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .message {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 12px;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+        }
+        .message.user {
+            align-self: flex-end;
+            background: #4f46e5;
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+        .message.ai {
+            align-self: flex-start;
+            background: white;
+            color: #333;
+            border-bottom-left-radius: 4px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        }
+        .message.error {
+            align-self: center;
+            background: #fee2e2;
+            color: #991b1b;
+        }
+        .message .label {
+            font-size: 12px;
+            opacity: 0.7;
+            margin-bottom: 4px;
+        }
+        
+        .input-container {
+            background: white;
+            padding: 16px 20px;
+            border-top: 1px solid #e5e5e5;
+            display: flex;
+            gap: 12px;
+        }
+        .input-container textarea {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            resize: none;
+            font-size: 14px;
+            font-family: inherit;
+            height: 48px;
+        }
+        .input-container textarea:focus {
+            outline: none;
+            border-color: #4f46e5;
+        }
+        .input-container button {
+            padding: 0 24px;
+            background: #4f46e5;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .input-container button:hover { background: #4338ca; }
+        .input-container button:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+        }
+        
+        .typing {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+        }
+        .typing::after {
+            content: '...';
+            animation: dots 1.5s steps(4, end) infinite;
+        }
+        @keyframes dots {
+            0%, 20% { content: ''; }
+            40% { content: '.'; }
+            60% { content: '..'; }
+            80%, 100% { content: '...'; }
+        }
+        
+        .empty-hint {
+            text-align: center;
+            color: #9ca3af;
+            margin-top: 40px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🤖 智能出行助手</h1>
+        <div class="controls">
+            <select id="modeSelect">
+                <option value="1">ReAct 模式</option>
+                <option value="2">Plan-Execute 模式</option>
+            </select>
+            <button onclick="clearMemory()">🗑️ 清空记忆</button>
+            <button onclick="clearChat()">💬 清空对话</button>
+        </div>
+    </div>
+    
+    <div class="chat-container" id="chatContainer">
+        <div class="empty-hint" id="emptyHint">
+            👋 你好！我是智能出行助手，试试问我天气吧~
+        </div>
+    </div>
+    
+    <div class="input-container">
+        <textarea id="messageInput" placeholder="输入你的问题，按 Enter 发送，Shift+Enter 换行..."></textarea>
+        <button id="sendBtn" onclick="sendMessage()">发送</button>
+    </div>
+
+    <script>
+        const chatContainer = document.getElementById('chatContainer');
+        const messageInput = document.getElementById('messageInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const modeSelect = document.getElementById('modeSelect');
+        const emptyHint = document.getElementById('emptyHint');
+
+        // Enter 发送，Shift+Enter 换行
+        messageInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        async function sendMessage() {
+            const message = messageInput.value.trim();
+            if (!message) return;
+
+            // 隐藏空提示
+            if (emptyHint) emptyHint.style.display = 'none';
+
+            // 添加用户消息
+            addMessage('user', message);
+            messageInput.value = '';
+            sendBtn.disabled = true;
+
+            // 添加 AI 思考中
+            const aiMsg = addMessage('ai', '<span class="typing"></span>', true);
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message: message,
+                        mode: modeSelect.value
+                    })
+                });
+
+                const data = await response.json();
+                
+                if (data.error) {
+                    aiMsg.className = 'message error';
+                    aiMsg.innerHTML = '<div class="label">❌ 错误</div>' + data.error;
+                } else {
+                    aiMsg.innerHTML = '<div class="label">🤖 AI</div>' + escapeHtml(data.answer);
+                }
+            } catch (err) {
+                aiMsg.className = 'message error';
+                aiMsg.innerHTML = '<div class="label">❌ 错误</div>网络错误: ' + err.message;
+            }
+
+            sendBtn.disabled = false;
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function addMessage(type, content, isTemp = false) {
+            if (emptyHint) emptyHint.style.display = 'none';
+            
+            const div = document.createElement('div');
+            div.className = 'message ' + type;
+            
+            const label = document.createElement('div');
+            label.className = 'label';
+            label.textContent = type === 'user' ? '👤 你' : '🤖 AI';
+            
+            const text = document.createElement('div');
+            text.textContent = content;
+            
+            div.appendChild(label);
+            div.appendChild(text);
+            chatContainer.appendChild(div);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+            
+            return div;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        async function clearMemory() {
+            if (!confirm('确定要清空所有记忆吗？')) return;
+            try {
+                await fetch('/api/memory', { method: 'DELETE' });
+                alert('记忆已清空！');
+            } catch (err) {
+                alert('清空失败: ' + err.message);
+            }
+        }
+
+        function clearChat() {
+            chatContainer.innerHTML = '';
+            const hint = document.createElement('div');
+            hint.className = 'empty-hint';
+            hint.textContent = '👋 对话已清空，开始新的对话吧~';
+            chatContainer.appendChild(hint);
+        }
+    </script>
+</body>
+</html>
