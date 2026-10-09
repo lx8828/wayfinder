@@ -114,6 +114,10 @@ class LLMClient:
         started = time.perf_counter()
         try:
             response = self.sdk.chat.completions.create(**kwargs)
+        except AssertionError:
+            # 护栏/断言错误（如 ScriptedLLM 脚本与实际请求不匹配）不应被包装成 LLMError，
+            # 否则测试里的接线错误会被误判为运行时故障。
+            raise
         except Exception as exc:  # 网络 / 超时 / 鉴权等
             self._trace("llm_error", error=repr(exc), latency_ms=self._elapsed_ms(started))
             raise LLMError(f"LLM 调用失败：{exc}") from exc
