@@ -280,6 +280,63 @@ def test_metric_delta_direction_is_declared_for_every_metric():
 JUDGE_CASES_PATH = Path(evals_pkg.__file__).parent / "judge_cases.jsonl"
 
 
+def test_repeat_runs_average_metrics_and_report_consistency(tmp_path):
+    case = _case("react_single_weather_001")
+
+    repeats = suite.run_repeated(
+        [case], offline.offline_engine_factory, metadata={"mode": "offline"}, repeat=2
+    )
+
+    assert repeats.repeat == 2
+    assert repeats.metrics_mean["Tool Selection Accuracy"] == 100.0
+    assert repeats.metrics_spread()["Tool Selection Accuracy"] == 0.0
+    consistency = repeats.consistency()
+    assert consistency["cases"] == 1
+    assert consistency["passed_consistency"] == 100.0
+    assert consistency["flaky_cases"] == []
+
+    payload = json.loads(
+        suite.write_repeats(tmp_path / "repeats.json", repeats).read_text(encoding="utf-8")
+    )
+    assert payload["repeat"] == 2
+    assert len(payload["per_run_metrics"]) == 2
+    assert "跨轮一致率" in suite.format_repeat_report(repeats)
+
+
+def test_consistency_detects_flaky_cases():
+    """跨轮结论不一致的用例必须被点名——否则「稳定性」无从谈起。"""
+
+    case = _case("react_single_weather_001")
+    answers = iter([True, False])
+
+    def factory(_case: EvalCase):
+        def engine(_inner: EvalCase) -> RunOutcome:
+            ok = next(answers)
+            return RunOutcome(
+                answer="离线夹具回答：北京" if ok else "抱歉",
+                tool_calls=["get_weather"] if ok else [],
+                arguments={"get_weather": [{"city": "北京"}]} if ok else {},
+                steps=1,
+            )
+
+        return engine
+
+    repeats = suite.run_repeated([case], factory, metadata={"mode": "fake"}, repeat=2)
+    consistency = repeats.consistency()
+
+    assert consistency["passed_consistency"] == 0.0
+    assert consistency["tool_sequence_consistency"] == 0.0
+    assert consistency["flaky_cases"] == ["react_single_weather_001"]
+    assert [check.case.case_id for check in repeats.all_failing_checks()] == [
+        "react_single_weather_001"
+    ]
+
+
+def test_run_repeated_rejects_zero_repeats():
+    with pytest.raises(ValueError, match="repeat"):
+        suite.run_repeated([], offline.offline_engine_factory, metadata={}, repeat=0)
+
+
 def test_judge_cases_are_loaded_and_have_criteria():
     cases = judge_mod.load_judge_cases(JUDGE_CASES_PATH)
 

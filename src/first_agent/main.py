@@ -38,6 +38,12 @@ def build_parser() -> argparse.ArgumentParser:
     evals.add_argument(
         "--update-baseline", action="store_true", help="把本次结果写为基线后退出"
     )
+    evals.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="重复跑 N 次并给出 Run-to-run Consistency（真 LLM 段用来看稳定性）",
+    )
     evals.add_argument("--no-gate", action="store_true", help="只报告，不因门禁失败返回非零")
     evals.add_argument(
         "--judge", action="store_true", help="额外跑 judge_cases.jsonl（开放式答案，需配合 --real）"
@@ -257,32 +263,63 @@ def _run_eval(args: argparse.Namespace) -> int:
         model=model,
         registry=offline.build_registry(cases[0]),
     )
-    run = suite.run_suite(cases, factory, metadata=metadata)
-
-    if not args.quiet:
-        print(f"[first-agent] 评测完成：{len(run.checks)} 条用例（mode={mode}，model={model}）")
-        print(suite.metrics_report(run.metrics))
+    repeats = None
+    if args.repeat > 1:
+        repeats = suite.run_repeated(cases, factory, metadata=metadata, repeat=args.repeat)
+        consistency = repeats.consistency()
+        metrics = repeats.metrics_mean
+        if consistency.get("cases"):
+            # design 16.6 的波动指标：只统计裁判/用例结论的跨轮一致率
+            metrics["Run-to-run Consistency"] = consistency["passed_consistency"]
+        run = suite.SuiteRun(
+            checks=repeats.runs[-1].checks,
+            metrics=metrics,
+            metadata={**metadata, "repeat": args.repeat},
+        )
+        if not args.quiet:
+            print(
+                f"[first-agent] 重复 {args.repeat} 次 × {len(cases)} 条用例"
+                f"（mode={mode}，model={model}）"
+            )
+            print(suite.format_repeat_report(repeats))
+    else:
+        run = suite.run_suite(cases, factory, metadata=metadata)
+        if not args.quiet:
+            print(f"[first-agent] 评测完成：{len(run.checks)} 条用例（mode={mode}，model={model}）")
+            print(suite.metrics_report(run.metrics))
 
     if args.judge:
         from first_agent.evals import judge as judge_mod
 
         judge_cases = judge_mod.load_judge_cases(cases_path.parent / "judge_cases.jsonl")
-        judged = judge_mod.run_judge_cases(
-            judge_cases, factory, judge_mod.LlmJudge(client)
-        )
-        rate = judge_mod.task_success_rate(judged)
-        if rate is not None:
-            run.metrics["Task Success Rate"] = rate
-        if not args.quiet:
-            print(judge_mod.format_judge_report(judged))
-        print(f"[first-agent] judge 样本 {len(judged)} 条，Task Success Rate = {rate}")
+        judge = judge_mod.LlmJudge(client)
+        rates: list[float | None] = []
+        for index in range(max(1, args.repeat)):
+            judged = judge_mod.run_judge_cases(judge_cases, factory, judge)
+            rates.append(judge_mod.task_success_rate(judged))
+            if not args.quiet:
+                print(f"--- judge 第 {index + 1} 轮 ---")
+                print(judge_mod.format_judge_report(judged))
+        scored = [rate for rate in rates if rate is not None]
+        if scored:
+            mean_rate = round(sum(scored) / len(scored), 2)
+            run.metrics["Task Success Rate"] = mean_rate
+            print(f"[first-agent] judge 每轮：{rates} → 均值 {mean_rate}")
+        if repeats is not None:
+            repeats.judge_rates = rates
+
+    if repeats is not None:
+        path = suite.write_repeats(out_dir / f"repeats{suffix}.json", repeats)
+        print(f"[first-agent] 每轮明细：{path}")
+
+    failing = repeats.all_failing_checks() if repeats is not None else run.failures
 
     baseline_path = out_dir / f"baseline{suffix}.json"
     if args.update_baseline:
-        if run.failures:
-            print(suite.failure_report(run.checks), file=sys.stderr)
+        if failing:
+            print(suite.failure_report(failing), file=sys.stderr)
             print(
-                f"[first-agent] 有 {len(run.failures)} 条用例未通过，拒绝写为基线。",
+                f"[first-agent] 有 {len(failing)} 条用例未通过，拒绝写为基线。",
                 file=sys.stderr,
             )
             return 1
@@ -295,7 +332,7 @@ def _run_eval(args: argparse.Namespace) -> int:
     gate = suite.evaluate_gate(suite.load_baseline(baseline_path), run.metrics)
     paths = suite.write_outputs(run, out_dir=out_dir, suffix=suffix, gate=gate)
     print(f"[first-agent] 产物：{paths['current']} / {paths.get('diff', '—')}")
-    print(suite.failure_report(run.checks))
+    print(suite.failure_report(failing))
     if not args.quiet:
         print(gate.diff_markdown)
 
@@ -306,8 +343,8 @@ def _run_eval(args: argparse.Namespace) -> int:
     if gate.warnings:
         names = "、".join(delta.name for delta in gate.warnings)
         print(f"[first-agent] 警告（波动指标恶化，需人工复核）：{names}", file=sys.stderr)
-    if run.failures:
-        print(f"[first-agent] 门禁失败：{len(run.failures)} 条用例未通过", file=sys.stderr)
+    if failing:
+        print(f"[first-agent] 门禁失败：{len(failing)} 条用例未通过", file=sys.stderr)
         return 0 if args.no_gate else 1
 
     print("[first-agent] 门禁通过 ✅")

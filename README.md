@@ -124,21 +124,41 @@ ToolAgentRuntime（组合根）            │
 另有 `judge_cases.jsonl` 的 5 条开放式用例走 LLM-as-Judge（`--real --judge`），
 单独报告 `Task Success Rate`。
 
-### 实测数字（本机一次运行）
+### 实测数字
 
-| 指标 | 离线（夹具） | 真 LLM |
+**离线（夹具）**：全部稳定指标 100.00 —— 这是**期望值**（夹具即"称职模型"），衡量 Runtime 是否忠实执行，价值在回归检测。
+
+**真 LLM（deepseek-chat，`--repeat 3 --judge` 跑了 2 批，共 6 次运行 / 216 次用例执行）**：
+
+| 指标 | 批次 A 均值（波动） | 批次 B 均值（波动） |
 |---|---:|---:|
-| Tool Selection Accuracy | 100.00 | 95.24 |
-| Tool Sequence Accuracy | 100.00 | 80.00 |
-| Argument Accuracy | 100.00 | 94.74 |
-| Memory Decision Accuracy | 100.00 | 80.56 |
-| Extra Tool Call Rate | 0.00 | 4.88 |
-| Average Steps | 1.72 | 1.58 |
-| Average Latency | 0.6 ms | 1676.7 ms |
-| Task Success Rate（judge） | — | 100.00（5/5 裁判成功） |
+| Tool Selection Accuracy | 92.07（4.76） | 98.41（4.76） |
+| Tool Sequence Accuracy | 71.11（20.00） | 64.45（6.67） |
+| Argument Accuracy | 89.47（0.00） | 92.98（5.27） |
+| Memory Decision Accuracy | 81.48（2.77） | 80.56（8.33） |
+| Extra Tool Call Rate | 5.28（8.33） | 6.02（2.50） |
+| Assertion Pass Rate | 54.44（3.34） | 53.33（6.67） |
+| Average Steps | 1.51（0.12） | 1.54（0.11） |
+| Average Latency | 1729.6 ms（143.1） | 1764.4 ms（276.7） |
+| Structured Output Validity Rate | 100.00（0.00） | 100.00（0.00） |
+| Run-to-run Consistency（结论） | 88.89% | 80.56% |
+| Run-to-run Consistency（工具序列） | 72.22% | 77.78% |
+| Task Success Rate（judge，n=5） | 73.33（80/60/80） | 73.33（60/80/80） |
 
-**怎么读**：离线的 100% 是**期望值**（夹具即"称职模型"），它衡量 Runtime 是否忠实执行，
-价值在回归检测；真 LLM 段才是模型能力。两段的差距（序列 100 → 80）正是本项目想量化的东西。
+「波动」= 同一批 3 轮的最大−最小；明细见 `src/first_agent/evals/repeats_live.json`。
+
+**能得出的结论**：
+
+- **稳定**：`Structured Output Validity Rate` 6/6 轮 100%——`chat_json` 状态机 + pydantic 校验
+  在真实流量下没崩过；平均延迟 1.63～1.91s；`Memory Decision Accuracy` 80～81%。
+- **最不稳**：`Tool Sequence Accuracy` 单轮 60～80（同批内摆动 20pt）——多步计划里模型会选
+  不同的合法分解与顺序；36 条用例中 13 条的工具序列会跨轮变化。
+- **要谨慎引用**：judge 只有 5 条用例太小，**同一用例的裁判结论会翻转**（实测出现
+  通过/不通过/通过），单轮 `Task Success Rate` 不可当结论，只能用多轮均值。
+- **约一半用例未通过**（每轮 17～20/36），原因分三类、不能都算模型差：夹具/断言写死了
+  理想模型的措辞（如追问期望出现 slot 名 `destination`，真模型用中文回答）；模型给出合理的
+  不同分解；以及确有漏答。**所以离线段是门禁（衡量 Runtime），真 LLM 段是诊断
+  （衡量「模型 + 我的夹具假设」）。**
 
 ### 门禁有效性（变异测试，不是"跑一次好看"）
 
@@ -160,7 +180,7 @@ tool schema version / case set hash**，可回答「这次指标变化对应哪�
 | 命令 | 作用 |
 |---|---|
 | `first-agent chat "<问题>" [--mode react\|plan] [--user U] [--session S] [--show-thought] [--show-memory] [--budget-ms N]` | 单轮对话（默认 `react`） |
-| `first-agent eval [--real] [--judge] [--update-baseline] [--no-gate] [--quiet] [--out DIR]` | 跑评测与回归门禁 |
+| `first-agent eval [--real] [--judge] [--repeat N] [--update-baseline] [--no-gate] [--quiet] [--out DIR]` | 跑评测与回归门禁；`--real --repeat 3 --judge` 给真 LLM 的均值/波动与跨轮一致率 |
 | `first-agent memory list [--user U \| --all-users] [--json]` | 查看长期记忆 |
 | `first-agent memory show <key> [--user U] [--json]` / `memory rm <key> [--user U]` | 查看 / 删除单条记忆 |
 | `first-agent trace stats [--dir DIR] [--json]` / `trace tail [--n N]` | Trace 聚合统计 / 最近事件 |
@@ -186,8 +206,14 @@ tool schema version / case set hash**，可回答「这次指标变化对应哪�
 - **无 HTTP 服务层**：只有 CLI。服务化（FastAPI）是可选阶段，未做——但 `SessionStore` 已按多会话设计，
   接入时不需要改内核。
 - **单值记忆**：`UNIQUE(user_id, key)`，不支持多值 KV 与记忆历史版本；`complementary` 关系按 `skip` 处理并记 Trace。
-- **LLM-as-Judge 的局限**：目前复用同一客户端（仅 prompt 独立），判定偏宽松，
-  且 `Task Success Rate` 只统计裁判成功的样本。
+- **LLM-as-Judge 的局限**：复用同一客户端（仅 prompt 独立），判定偏宽松；
+  `Task Success Rate` 只统计裁判成功的样本；**5 条用例的样本量太小**，同一用例的裁判结论
+  会跨轮翻转（实测），因此该指标只用多轮均值、不引用单轮数字。
+- **断言对措辞敏感**：`assertions` 是精确子串匹配，真模型换个说法（或换语言）就判失败，
+  因此真 LLM 段的 `Assertion Pass Rate` 只有 ~54%，它衡量的是「回答是否命中我写死的措辞」，
+  而不是「回答是否正确」——正确性交给 judge。
+- **夹具世界比模型的动作空间窄**：真跑中出现过 `estimate_travel_time: not_found`——
+  模型传入的方式/城市不在 Fake provider 的覆盖范围里，暴露的是夹具覆盖面而非模型错误。
 - **`estimate_travel_time` 是启发式实现**（距离 ÷ 速度），不是实时路况——项目没有接实时交通 API，
   宁可给确定性实现并说明，也不假装有实时数据。
 - **`cl100k_base` 未接入**：上下文预算用字符数近似 + 安全系数 1.2，避免首次联网下载词表破坏"离线可跑"。
@@ -218,7 +244,9 @@ uv run first-agent eval --quiet   # 离线评测门禁，无 API Key
 - 记忆写入拆成「抽取 → 关系裁决 → 确定性落库」，其中 LLM 只判关系，
   从结构上消除了旧实现「LLM 判 add 但代码不处理导致数据丢失」的缺陷。
 - 建立**两段式评测**（离线夹具硬门禁 + 真 LLM 波动指标）与方向化容差判定，
-  并用变异测试证明门禁真能挡住回归；真 LLM 段量化出工具序列准确率 80.0%、平均延迟 1676.7ms。
+  并用变异测试证明门禁真能挡住回归；真 LLM 段用 `--repeat 3` 量化出模型能力**及其波动**：
+  工具选择 92～98%、工具序列 64～71%（同批摆动最大 20pt）、平均延迟 1.73～1.76s、
+  跨轮结论一致率 80.6～88.9%。
 - 410+ 个测试全部离线可跑（注入 ScriptedLLM 与 Fake provider），覆盖失败、超时、
   依赖阻塞、预算熔断与降级路径。
 

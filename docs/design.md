@@ -75,6 +75,7 @@
 | R17 | 用例级新增「工具必须真的成功」判定（`tool_ok`） | 工具全挂但工具集合/参数恰好正确时，指标会假装一切正常（S7 首次运行就踩到：`invalid_output` 被 100% 的指标掩盖） | 16.2 |
 | R18 | LLM-as-Judge 必须同时看到**工具观测数据** | 不给观测，裁判会把回答里的真实数值误判为「编造事实」（首次真实运行实测） | 16.3 |
 | R19 | `TRACE_MODE` / `FIRST_AGENT_TRACE_DIR` 真正接入 CLI；新增 `core/inspect.py` 承载 `memory` / `trace` 的数据层 | 前两个环境变量文档写了但代码从未读取（文档与实现不符）；运维视图放在 CLI 里无法单测 | 15 / 5 |
+| R21 | 新增 `--repeat N` 并落地 `Run-to-run Consistency`（结论 + 工具序列两个口径）；硬失败按「任意一轮失败」去重 | 设计 14.4 要求「真 LLM 跑 3 次观察稳定性」，但此前只能靠人工看日志；单轮数字无法区分「模型不稳」和「测试不稳」 | 14.4 / 16.5 |
 | R20 | 补齐**摘要生成**（`memory/summarizer.py`）并明确原文窗口策略 | 10.1/10.3 的摘要一直是「契约 + 表 + 读取路径就绪、写入未接线」，实际行为是"只留最近 8 轮、旧的静默丢弃"，与 README「三层记忆」的表述不符（由用户发现）；同时修掉引擎窗口与构建器窗口**双重裁剪**（引擎取 16 轮、构建器又砍回 8 轮） | 10.1 / 10.3 |
 
 **实测发现（真实冒烟，S3–S4）**：DeepSeek 在带 `tool_calls` 的响应里**有时输出 `content`（Thought）、有时不输出**——同一模型对同类问题先后返回 `content=null` 与 `content="I'll check the current weather in Beijing for you."`。这确认了方案 A（Thought 可选）是唯一稳妥的选择。另注意 **Thought 语言不受输入语言约束**（中文输入得到英文 Thought），如需统一只能在 prompt 中显式要求。
@@ -1212,6 +1213,15 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 - 元数据（commit / model / prompt_version / tool_schema_version / case_set_hash）随
   `baseline.json` 与 `current.json` 一起落盘，方便回答「这次变化对应哪次改动」。
 
+实现补充（S9 复查，稳定性观测）：
+
+- 新增 `--repeat N`：重复跑整套用例，输出**均值**与**波动（最大−最小）**，
+  并把每轮指标 + 一致性 + 裁判分数写入 `repeats{suffix}.json`。
+- `Run-to-run Consistency` 用两个口径：**结论**（`passed`）与**工具序列**（完全一致）；
+  两者都给出，因为「结论偶尔翻转」和「工具顺序抖动」是两类不同问题。不稳定用例会被点名。
+- 硬失败口径按「**任意一轮**失败」去重，避免重复跑把同一条用例的失败稀释掉。
+- 离线段的波动应当恒为 0；一旦非 0 说明夹具里混入了非确定性（例如依赖真实时间）。
+
 ### 16.6 指标
 
 | 指标 | 口径 |
@@ -1227,7 +1237,7 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 | Average Latency | 平均单次 run 耗时（越低越好） |
 | Task Success Rate | **仅对 `judge_cases.jsonl` 的开放式用例**，按 LLM-as-Judge 判定正确的占比（只统计裁判成功的样本）；确定性用例不计入本指标（用 `assertions` 断言代替） |
 | Assertion Pass Rate | 表外附加指标：声明了 `assertions` 的用例中全部断言通过的占比（真 LLM 段波动明显，只作参考） |
-| Run-to-run Consistency | 同一用例真 LLM 重复 3 次的结论一致率 |
+| Run-to-run Consistency | 同一用例真 LLM 重复 N 次的**结论一致率**（`--repeat N` 实现；同时给出工具序列一致率）。实测 6 次运行：结论 80.6～88.9%、工具序列 72.2～77.8% |
 
 ---
 
@@ -1306,6 +1316,8 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 | 摘要注入上下文并按覆盖收窄窗口 | `tests/test_session_summary.py::test_window_narrows_when_summary_covers_earlier_turns` | ✅ |
 | 摘要落后时窗口回退到 16 轮 | `tests/test_session_summary.py::test_window_falls_back_to_trigger_when_summary_is_missing` | ✅ |
 | 预算耗尽跳过摘要 | `tests/test_session_summary.py::test_summary_is_skipped_when_budget_is_exhausted` | ✅ |
+| 重复运行给出均值与波动 | `tests/test_eval_suite.py::test_repeat_runs_average_metrics_and_report_consistency` | ✅ |
+| 跨轮不一致的用例被点名 | `tests/test_eval_suite.py::test_consistency_detects_flaky_cases` | ✅ |
 | 跨会话记忆恢复 | `tests/test_memory_store.py` + `tests/test_runtime_engine.py` | ✅（评测用例样本待 S7 扩到 30～40 条） |
 
 ---
@@ -1497,6 +1509,36 @@ LLM-as-Judge（`--judge`）、元数据落盘（commit / model / prompt / tool s
 **读法**：离线段的 100% 是「期望值」（夹具即理想模型），它衡量 Runtime 忠实度，
 价值在回归检测；真实段才是模型能力。两段差距（如 `Tool Sequence Accuracy`
 100 → 80）正是 v2 想量化的东西，也是 v1 完全没有的数字。
+
+**真 LLM 多次运行（S9 复查，`--real --repeat 3 --judge` × 2 批 = 6 次运行 / 216 次用例执行）**：
+
+| 指标 | 批次 A 均值（波动） | 批次 B 均值（波动） |
+|---|---:|---:|
+| Tool Selection Accuracy | 92.07（4.76） | 98.41（4.76） |
+| Tool Sequence Accuracy | 71.11（**20.00**） | 64.45（6.67） |
+| Argument Accuracy | 89.47（0.00） | 92.98（5.27） |
+| Memory Decision Accuracy | 81.48（2.77） | 80.56（8.33） |
+| Extra Tool Call Rate | 5.28（8.33） | 6.02（2.50） |
+| Assertion Pass Rate | 54.44（3.34） | 53.33（6.67） |
+| Average Latency | 1729.6 ms（143.1） | 1764.4 ms（276.7） |
+| Structured Output Validity Rate | 100.00（0.00） | 100.00（0.00） |
+| Run-to-run Consistency（结论 / 工具序列） | 88.89% / 72.22% | 80.56% / 77.78% |
+| Task Success Rate（judge，n=5） | 73.33（80/60/80） | 73.33（60/80/80） |
+
+由此得到三条**可写进结论**的判断：
+
+1. **`Structured Output Validity Rate` 6/6 轮 100%**：`chat_json` 状态机 + pydantic 校验
+   在真实流量下没有一次崩掉——这是 v2 相对「裸 json.loads」最硬的收益。
+2. **`Tool Sequence Accuracy` 是最大不稳定源**（单轮 60～80，同批摆动 20pt）：
+   多步计划里模型会选择不同的合法分解与顺序，36 条用例中 13 条工具序列跨轮变化。
+   引用该指标必须带波动，不能只报单轮。
+3. **judge 自身是方差源**：同一用例在不同轮次出现「通过/不通过/通过」，
+   5 条用例的样本量太小 → `Task Success Rate` 只能用多轮均值，单轮数字不可当结论。
+
+另外，真实段每轮有 17～20/36 条用例未通过。**必须分类归因，不能都算模型差**：
+夹具/断言写死了理想模型的措辞（追问用例期望出现 slot 名 `destination`，真模型用中文回答）、
+模型给出的合理不同分解、以及确有漏答；还出现过 `estimate_travel_time: not_found`
+（模型传入的方式/城市超出 Fake provider 覆盖）。因此：**离线段是门禁，真 LLM 段是诊断**。
 
 ### Phase 5 ✅：文档与可选优化，0.5～1 天
 

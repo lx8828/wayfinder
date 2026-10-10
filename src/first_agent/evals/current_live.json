@@ -1,24 +1,26 @@
 {
   "metadata": {
-    "case_count": 36,
+    "case_count": 0,
     "case_set_hash": "6612a021f59b",
-    "generated_at": "2026-10-09T20:03:09+00:00",
-    "git_commit": "928509d",
+    "generated_at": "2026-10-10T13:29:21+00:00",
+    "git_commit": "e8bf283",
     "mode": "real",
     "model": "deepseek-chat",
     "prompt_version": "f61d6c635cb9",
+    "repeat": 3,
     "tool_schema_version": "b0438bbb98a6"
   },
   "metrics": {
-    "Argument Accuracy": 94.74,
-    "Assertion Pass Rate": 60.0,
-    "Average Latency": 1676.7,
-    "Average Steps": 1.58,
-    "Extra Tool Call Rate": 4.88,
+    "Argument Accuracy": 92.98,
+    "Assertion Pass Rate": 53.33,
+    "Average Latency": 1764.4,
+    "Average Steps": 1.54,
+    "Extra Tool Call Rate": 6.02,
     "Memory Decision Accuracy": 80.56,
+    "Run-to-run Consistency": 80.56,
     "Structured Output Validity Rate": 100.0,
-    "Task Success Rate": 80.0,
-    "Tool Selection Accuracy": 95.24,
-    "Tool Sequence Accuracy": 80.0
+    "Task Success Rate": 73.33,
+    "Tool Selection Accuracy": 98.41,
+    "Tool Sequence Accuracy": 64.45
   }
 }

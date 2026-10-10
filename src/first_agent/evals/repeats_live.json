@@ -1,0 +1,91 @@
+{
+  "consistency": {
+    "cases": 36,
+    "flaky_cases": [
+      "degrade_replan_027",
+      "fail_calendar_plan_026",
+      "fail_weather_unavailable_024",
+      "plan_chain_park_015",
+      "plan_chain_travel_016",
+      "plan_double_calendar_013",
+      "plan_double_time_weather_011",
+      "plan_need_info_date_023",
+      "plan_need_info_origin_021",
+      "plan_single_time_008",
+      "plan_single_weather_007",
+      "react_double_travel_time_014",
+      "react_single_travel_005"
+    ],
+    "passed_consistency": 80.56,
+    "repeat": 3,
+    "tool_sequence_consistency": 77.78
+  },
+  "failure_counts": [
+    19,
+    20,
+    17
+  ],
+  "judge_rates": [
+    60.0,
+    80.0,
+    80.0
+  ],
+  "metrics_mean": {
+    "Argument Accuracy": 92.98,
+    "Assertion Pass Rate": 53.33,
+    "Average Latency": 1764.4,
+    "Average Steps": 1.54,
+    "Extra Tool Call Rate": 6.02,
+    "Memory Decision Accuracy": 80.56,
+    "Structured Output Validity Rate": 100.0,
+    "Tool Selection Accuracy": 98.41,
+    "Tool Sequence Accuracy": 64.45
+  },
+  "metrics_spread": {
+    "Argument Accuracy": 5.27,
+    "Assertion Pass Rate": 6.67,
+    "Average Latency": 276.7,
+    "Average Steps": 0.11,
+    "Extra Tool Call Rate": 2.5,
+    "Memory Decision Accuracy": 8.33,
+    "Structured Output Validity Rate": 0.0,
+    "Tool Selection Accuracy": 4.76,
+    "Tool Sequence Accuracy": 6.67
+  },
+  "per_run_metrics": [
+    {
+      "Argument Accuracy": 94.74,
+      "Assertion Pass Rate": 56.67,
+      "Average Latency": 1905.9,
+      "Average Steps": 1.58,
+      "Extra Tool Call Rate": 7.5,
+      "Memory Decision Accuracy": 77.78,
+      "Structured Output Validity Rate": 100.0,
+      "Tool Selection Accuracy": 100.0,
+      "Tool Sequence Accuracy": 66.67
+    },
+    {
+      "Argument Accuracy": 89.47,
+      "Assertion Pass Rate": 50.0,
+      "Average Latency": 1629.2,
+      "Average Steps": 1.47,
+      "Extra Tool Call Rate": 5.56,
+      "Memory Decision Accuracy": 77.78,
+      "Structured Output Validity Rate": 100.0,
+      "Tool Selection Accuracy": 95.24,
+      "Tool Sequence Accuracy": 60.0
+    },
+    {
+      "Argument Accuracy": 94.74,
+      "Assertion Pass Rate": 53.33,
+      "Average Latency": 1758.1,
+      "Average Steps": 1.58,
+      "Extra Tool Call Rate": 5.0,
+      "Memory Decision Accuracy": 86.11,
+      "Structured Output Validity Rate": 100.0,
+      "Tool Selection Accuracy": 100.0,
+      "Tool Sequence Accuracy": 66.67
+    }
+  ],
+  "repeat": 3
+}

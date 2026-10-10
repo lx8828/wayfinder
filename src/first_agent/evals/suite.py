@@ -124,6 +124,102 @@ def run_suite(
     return SuiteRun(checks=checks, metrics=compute_metrics(checks), metadata=metadata)
 
 
+@dataclass
+class RepeatRuns:
+    """同一套用例重复跑 N 次的结果（design.md 14.4 / 16.6 的稳定性观察）。"""
+
+    runs: list[SuiteRun] = field(default_factory=list)
+    # 每轮的 judge 通过率（开放式用例）；由 CLI 在跑完裁判后回填
+    judge_rates: list[float | None] = field(default_factory=list)
+
+    @property
+    def repeat(self) -> int:
+        return len(self.runs)
+
+    def _names(self) -> list[str]:
+        return sorted({name for run in self.runs for name in run.metrics})
+
+    @property
+    def metrics_mean(self) -> dict[str, float]:
+        if not self.runs:
+            return {}
+        return {
+            name: round(
+                sum(run.metrics.get(name, 0.0) for run in self.runs) / len(self.runs), 2
+            )
+            for name in self._names()
+        }
+
+    def metrics_spread(self) -> dict[str, float]:
+        """每个指标的波动幅度（最大 − 最小），用于判断「这个数字稳不稳」。"""
+
+        spread: dict[str, float] = {}
+        for name in self._names():
+            values = [run.metrics[name] for run in self.runs if name in run.metrics]
+            if values:
+                spread[name] = round(max(values) - min(values), 2)
+        return spread
+
+    def all_failing_checks(self) -> list[CaseCheck]:
+        """在**任意一轮**失败的用例（按 case_id 去重，保留首次失败）。"""
+
+        seen: set[str] = set()
+        failing: list[CaseCheck] = []
+        for run in self.runs:
+            for check in run.failures:
+                if check.case.case_id in seen:
+                    continue
+                seen.add(check.case.case_id)
+                failing.append(check)
+        return failing
+
+    def consistency(self) -> dict[str, Any]:
+        """逐用例判断结论是否跨轮一致（``Run-to-run Consistency``）。
+
+        两个口径：**结论**（``passed``）与**工具序列**（完全一致）。二者都给出，
+        因为「结论偶尔翻转」和「工具顺序抖动」是两类不同的问题。
+        """
+
+        by_case: dict[str, list[CaseCheck]] = {}
+        for run in self.runs:
+            for check in run.checks:
+                by_case.setdefault(check.case.case_id, []).append(check)
+
+        comparable = {case_id: items for case_id, items in by_case.items() if len(items) > 1}
+        if not comparable:
+            return {"cases": 0}
+
+        passed_stable = 0
+        tools_stable = 0
+        flaky: list[str] = []
+        for case_id, items in comparable.items():
+            same_passed = len({item.passed for item in items}) == 1
+            same_tools = len({tuple(item.outcome.tool_calls) for item in items}) == 1
+            passed_stable += same_passed
+            tools_stable += same_tools
+            if not (same_passed and same_tools):
+                flaky.append(case_id)
+
+        total = len(comparable)
+        return {
+            "cases": total,
+            "repeat": self.repeat,
+            "passed_consistency": round(100.0 * passed_stable / total, 2),
+            "tool_sequence_consistency": round(100.0 * tools_stable / total, 2),
+            "flaky_cases": sorted(flaky),
+        }
+
+
+def run_repeated(
+    cases: Iterable[EvalCase], factory: EngineFactory, *, metadata: dict[str, Any], repeat: int
+) -> RepeatRuns:
+    """重复执行整套用例（真 LLM 段用来观察稳定性；离线段重复只是浪费）。"""
+
+    if repeat < 1:
+        raise ValueError("repeat 至少为 1")
+    return RepeatRuns([run_suite(cases, factory, metadata=metadata) for _ in range(repeat)])
+
+
 # -- 报告 ------------------------------------------------------------------
 
 
@@ -164,6 +260,49 @@ def metrics_report(metrics: dict[str, float]) -> str:
     for name, value in sorted(metrics.items()):
         lines.append(f"| {name} | {value:.2f} |")
     return "\n".join(lines)
+
+
+def format_repeat_report(repeats: RepeatRuns) -> str:
+    """重复运行的均值/波动表 + 跨轮一致率。"""
+
+    spread = repeats.metrics_spread()
+    lines = ["| 指标 | 均值 | 波动（最大−最小） |", "|---|---:|---:|"]
+    for name, value in repeats.metrics_mean.items():
+        lines.append(f"| {name} | {value:.2f} | {spread.get(name, 0.0):.2f} |")
+
+    consistency = repeats.consistency()
+    if not consistency.get("cases"):
+        return "\n".join(lines)
+    lines += [
+        "",
+        f"跨轮一致率（{consistency['repeat']} 次 × {consistency['cases']} 条用例）："
+        f"结论 {consistency['passed_consistency']:.2f}%、"
+        f"工具序列 {consistency['tool_sequence_consistency']:.2f}%",
+    ]
+    if consistency["flaky_cases"]:
+        lines.append("不稳定用例：" + "、".join(consistency["flaky_cases"]))
+    return "\n".join(lines)
+
+
+def write_repeats(path: str | Path, repeats: RepeatRuns) -> Path:
+    """把每一轮的指标与一致性统计落盘（便于回答「这个数字稳不稳」）。"""
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "repeat": repeats.repeat,
+        "per_run_metrics": [run.metrics for run in repeats.runs],
+        "metrics_mean": repeats.metrics_mean,
+        "metrics_spread": repeats.metrics_spread(),
+        "consistency": repeats.consistency(),
+        "failure_counts": [len(run.failures) for run in repeats.runs],
+        # 裁判本身也会抖动：单轮数字不可当作结论（详见 README「已知限制」）
+        "judge_rates": list(repeats.judge_rates),
+    }
+    target.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    return target
 
 
 @dataclass
