@@ -4,7 +4,7 @@
 - 仓库：`first-agent`（本文档位于 `docs/design.md`，随代码一同版本化）
 - 版本：v0.4
 - 日期：2026-10-10
-- 状态：Proposed（S0–S11 已实现，见 0.1）
+- 状态：Proposed（S0–S12 已实现，见 0.1）
 - 术语：本文档版本为 v0.4；产品目标版本称 **v2**；旧手写实现称 **v1**（归入 `archive/handwritten_v1/`）
 - 目标：围绕 Agent 编排、原生工具调用、短期/长期记忆和离线评测，把项目二从功能 Demo 升级为可测试、可观测、可回归的 Agent Runtime
 
@@ -76,6 +76,7 @@
 | R18 | LLM-as-Judge 必须同时看到**工具观测数据** | 不给观测，裁判会把回答里的真实数值误判为「编造事实」（首次真实运行实测） | 16.3 |
 | R19 | `TRACE_MODE` / `FIRST_AGENT_TRACE_DIR` 真正接入 CLI；新增 `core/inspect.py` 承载 `memory` / `trace` 的数据层 | 前两个环境变量文档写了但代码从未读取（文档与实现不符）；运维视图放在 CLI 里无法单测 | 15 / 5 |
 | R21 | 新增 `--repeat N` 并落地 `Run-to-run Consistency`（结论 + 工具序列两个口径）；硬失败按「任意一轮失败」去重 | 设计 14.4 要求「真 LLM 跑 3 次观察稳定性」，但此前只能靠人工看日志；单轮数字无法区分「模型不稳」和「测试不稳」 | 14.4 / 16.5 |
+| R23 | 顺序类指标拆成四个互补维度：`Tool Set Accuracy`（召回）/ `Precedence Accuracy`（关键先后）/ `Plan Validity Rate`（计划合法性四要素）/ `Plan Success Rate`（端到端）；用例新增 `precedence` 字段 | 只用「序列完全相等」无法归因：**合法换序**与**语义顺序错误**被记成同一类失败。真 LLM 实测证明这不是理论问题：`Tool Set` 91.67 而 `Tool Sequence` 66.67，约 25pt 的"序列错误"其实是合法换序 | 16.2 / 16.6 |
 | R22 | CLI 启动时 `_configure_stdio()`：非交互输出切 UTF-8，交互控制台只放宽 `errors` | Windows 下 `first-agent eval > out.txt` / `\| Select-String` 会让 stdout 退化为 `gbk`，打印 `✅/✗/⚠` 直接 `UnicodeEncodeError`（exit 1、输出全空）；交互式控制台走 Windows 控制台 API 反而不受影响，所以只有重定向才暴露 | 15 / 19 |
 | R20 | 补齐**摘要生成**（`memory/summarizer.py`）并明确原文窗口策略 | 10.1/10.3 的摘要一直是「契约 + 表 + 读取路径就绪、写入未接线」，实际行为是"只留最近 8 轮、旧的静默丢弃"，与 README「三层记忆」的表述不符（由用户发现）；同时修掉引擎窗口与构建器窗口**双重裁剪**（引擎取 16 轮、构建器又砍回 8 轮） | 10.1 / 10.3 |
 
@@ -295,7 +296,7 @@ src/first_agent/
 │   └── repeats_live.json  # ✅ 真 LLM 每轮明细与一致性（--repeat，S10）
 └── main.py                # ✅ CLI（chat / eval / memory / trace）
 
-tests/                     # ✅ 421 个离线测试（无 API Key 可跑）
+tests/                     # ✅ 445 个离线测试（无 API Key 可跑）
 var/                       # ✅ 本地 SQLite 与 Trace（已 gitignore）
 
 .env.example               # ✅ 环境变量示例（不含密钥）
@@ -1128,6 +1129,23 @@ var/traces/YYYY-MM-DD.jsonl
   **不允许调用任何工具**；字段缺省才是「不约束」。二者语义必须区分，否则「什么都没调」
   会被当成「没约束」而静默通过。
 - `category`：用例类型，与 16.1 的表一一对应，仅用于统计与文档对照。
+- `precedence`：**关键先后约束**，形如 `[["resolve_datetime", "get_weather"]]`，表示前者必须出现在后者之前。
+  只声明语义上必要的顺序（如"日期要先解析出来"），**不追求唯一序列**——ReAct 的顺序本来就不唯一。
+  加载期即校验「必须是两个不同工具」，避免畸形夹具在跑用例时才炸掉整批。
+
+**顺序类指标拆成四个互补维度**（``Tool Sequence Accuracy`` 仍是主指标之一，但不再是唯一）：
+
+| 指标 | 判定口径 | 回答的问题 |
+|---|---|---|
+| `Tool Sequence Accuracy` | 序列完全匹配（plan 可用 `allowed_topological_orders` 放宽） | 是否走了预期路径 |
+| `Tool Selection Accuracy` | 集合**完全相等** | 有没有画蛇添足 |
+| `Tool Set Accuracy` | 必要工具**全覆盖**（只召回，不惩罚多余） | 该做的做了吗 |
+| `Precedence Accuracy` | 只检查声明的关键先后约束 | 依赖顺序对不对（不管无关顺序） |
+| `Plan Validity Rate` | 集合正确 + DAG 合法 + 无失败工具 + 无多余调用 | 计划本身站得住吗 |
+| `Plan Success Rate` | 计划合法 **且** 答案通过断言 | 端到端跑成了吗 |
+
+这四类的意义在于**可归因**：只看 `Tool Sequence Accuracy` 时，「模型换了合法顺序」与
+「模型先查天气再解析日期（语义错误）」都会被记成同一类失败。
 - `expect_tool_errors`（默认 `false`）：默认**不允许任何工具执行出错**，只有「工具失败
   与降级」类用例置 `true`。这是独立于指标的用例级判定，用于堵死
   「工具全挂、但工具集合与参数恰好正确」造成的假绿（见 R17）。
@@ -1229,7 +1247,11 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 
 | 指标 | 口径 |
 |---|---|
-| Tool Selection Accuracy | 选中工具（集合）正确的用例占比 |
+| Tool Selection Accuracy | 选中工具（集合）**完全相等**的用例占比 |
+| Tool Set Accuracy | **必要工具全覆盖**的用例占比（只看召回，多余调用由 `Extra Tool Call Rate` 负责） |
+| Precedence Accuracy | 声明了 `precedence` 的用例中，**关键先后约束全部满足**的占比 |
+| Plan Validity Rate | plan 用例中「集合正确 + DAG 合法 + 无失败工具 + 无多余调用」四项全满足的占比 |
+| Plan Success Rate | plan 用例中「计划合法 **且** 答案通过断言」的占比（含答案 → 波动指标，只告警） |
 | Tool Sequence Accuracy | Plan 用例中工具序列（含合法拓扑序）正确的占比 |
 | Argument Accuracy | 期望参数键值全部命中的占比 |
 | Structured Output Validity Rate | Plan / Memory 的 `chat_json` 一次或重试后校验通过率 |
@@ -1321,6 +1343,14 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 | 预算耗尽跳过摘要 | `tests/test_session_summary.py::test_summary_is_skipped_when_budget_is_exhausted` | ✅ |
 | 重复运行给出均值与波动 | `tests/test_eval_suite.py::test_repeat_runs_average_metrics_and_report_consistency` | ✅ |
 | 跨轮不一致的用例被点名 | `tests/test_eval_suite.py::test_consistency_detects_flaky_cases` | ✅ |
+| `Tool Set Accuracy` 只看召回、不惩罚多余 | `tests/test_plan_metrics.py::test_tool_set_accuracy_only_checks_recall` | ✅ |
+| `Precedence Accuracy` 只约束声明的先后 | `tests/test_plan_metrics.py::test_precedence_ignores_unrelated_order` | ✅ |
+| 先后约束颠倒/缺工具时判定失败 | `tests/test_plan_metrics.py::test_precedence_detects_reversed_order` | ✅ |
+| 畸形 `precedence` 在加载期即报错 | `tests/test_plan_metrics.py::test_load_cases_rejects_malformed_precedence` | ✅ |
+| `Plan Validity Rate` 四要素缺一不可 | `tests/test_plan_metrics.py::test_plan_validity_requires_all_four_conditions` | ✅ |
+| 降级成功仍记「计划不合法」 | `tests/test_plan_metrics.py::test_degraded_run_is_not_counted_as_a_valid_plan` | ✅ |
+| `Plan Success Rate` 要求合法且断言通过 | `tests/test_plan_metrics.py::test_plan_success_requires_validity_and_assertions` | ✅ |
+| 只错顺序时召回不掉、先后掉 | `tests/test_plan_metrics.py::test_metrics_drop_when_precedence_is_violated_but_names_still_match` | ✅ |
 | 非 UTF-8 重定向输出不崩（先证明不修必崩） | `tests/test_cli_encoding.py::test_configure_stdio_survives_non_utf8_stdout` | ✅ |
 | 不支持 `reconfigure` 的流也不抛错 | `tests/test_cli_encoding.py::test_configure_stdio_handles_streams_without_reconfigure` | ✅ |
 | 跨会话记忆恢复 | `tests/test_memory_store.py` + `tests/test_runtime_engine.py` | ✅（评测用例样本待 S7 扩到 30～40 条） |
@@ -1399,7 +1429,10 @@ v2 只建立在 `first-agent/`。
 
 > 实现进度（截至本文档 v0.4）：**Phase 0 ✅ / Phase 1 🟡 / Phase 2 ✅ / Phase 3a ✅ / Phase 3b ✅ / Phase 4 ✅ / Phase 5 ✅**
 >
-> 实际执行被拆成 S0～S11 若干小步，每步一个 commit + 一次全量测试。**S9/S10/S11 都是复查补漏**：
+> 实际执行被拆成 S0～S12 若干小步，每步一个 commit + 一次全量测试。**S9～S12 都是复查补漏**：
+> S12 按「顺序类指标不该只有一个」把 `Tool Set / Precedence / Plan Validity / Plan Success`
+> 拆出来（R23），真实数据证明拆分有效。
+> 之前的**S9/S10/S11 也是复查补漏**：
 > S9 发现 10.1/10.3 的摘要生成一直未接线（README 却写成「三层记忆」），故补齐实现并修掉窗口
 > 双重裁剪（R20）；S10 落地 `--repeat` 与 `Run-to-run Consistency`（R21），真实跑 6 次填上
 > 「设计要求跑 3 次但没有数字」的空缺；S11 修掉 Windows 重定向输出的编码崩溃（R22）
@@ -1526,7 +1559,11 @@ LLM-as-Judge（`--judge`）、元数据落盘（commit / model / prompt / tool s
 | 指标 | 批次 A 均值（波动） | 批次 B 均值（波动） |
 |---|---:|---:|
 | Tool Selection Accuracy | 92.07（4.76） | 98.41（4.76） |
+| Tool Set Accuracy（召回） | — | 91.67（11.11） |
 | Tool Sequence Accuracy | 71.11（**20.00**） | 64.45（6.67） |
+| Precedence Accuracy | — | 66.67（**37.50**） |
+| Plan Validity Rate | — | 61.90（14.29） |
+| Plan Success Rate | — | 26.19（7.14） |
 | Argument Accuracy | 89.47（0.00） | 92.98（5.27） |
 | Memory Decision Accuracy | 81.48（2.77） | 80.56（8.33） |
 | Extra Tool Call Rate | 5.28（8.33） | 6.02（2.50） |
@@ -1545,6 +1582,15 @@ LLM-as-Judge（`--judge`）、元数据落盘（commit / model / prompt / tool s
    引用该指标必须带波动，不能只报单轮。
 3. **judge 自身是方差源**：同一用例在不同轮次出现「通过/不通过/通过」，
    5 条用例的样本量太小 → `Task Success Rate` 只能用多轮均值，单轮数字不可当结论。
+4. **（R23 拆解后）`Tool Set` 91.67 明显高于 `Tool Sequence` 66.67**：
+   模型「该调的工具有没有调」远好于「顺序是否完全一致」，约 25pt 的差额来自**合法换序**。
+   而 `Precedence Accuracy` 66.67（同批摆动 **37.5pt**，最不稳）说明其中确有一部分是
+   **语义顺序错误**（先查天气、后解析日期）。若只看 `Tool Sequence Accuracy`，
+   这两类问题会被合并成一个数字，无法归因。
+5. **`Plan Validity Rate` 61.90 → `Plan Success Rate` 26.19**：约 38% 的 plan 运行存在结构性缺陷
+   （多余调用 / 工具失败 / 重规划后仍非法）；再叠加「答案通过断言」后只剩约 1/4。
+   这个落差主要由**严格子串断言**造成（`Assertion Pass Rate` 53.33），
+   而非答案不正确——开放式用例的 judge 通过率是 73.33。**两者必须一起读**。
 
 另外，真实段每轮有 17～20/36 条用例未通过。**必须分类归因，不能都算模型差**：
 夹具/断言写死了理想模型的措辞（追问用例期望出现 slot 名 `destination`，真模型用中文回答）、

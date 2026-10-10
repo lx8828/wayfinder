@@ -57,6 +57,8 @@ def to_run_outcome(result: Any) -> RunOutcome:
         latency_ms=int(getattr(result, "latency_ms", 0) or 0),
         status=getattr(result, "status", "success") or "success",
         error=getattr(result, "error", None),
+        # PlanResult 有该字段；ReactResult 没有 → None（不判定）
+        plan_valid=getattr(result, "plan_valid", None),
         tool_errors=_tool_errors(result),
         observations=_observations(result),
     )

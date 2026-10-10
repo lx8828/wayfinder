@@ -80,6 +80,9 @@ class EvalCase(BaseModel):
     # 默认**不允许**任何工具执行出错；只有「工具失败与降级」类用例才置 true。
     # 该判定独立于指标：否则工具全挂但工具集合/参数/答案都对时，指标会假装一切正常。
     expect_tool_errors: bool = False
+    # 关键先后约束：``[["resolve_datetime", "get_weather"]]`` 表示前者必须出现在后者之前。
+    # 只声明**语义上的必要顺序**，不追求唯一序列（ReAct 的顺序本来就不唯一）。
+    precedence: list[list[str]] = Field(default_factory=list)
     assertions: list[Assertion] = Field(default_factory=list)
     offline: OfflineFixture | None = None
 
@@ -112,6 +115,15 @@ def load_cases(path: str | Path) -> list[EvalCase]:
     duplicates = sorted(case_id for case_id, count in counts.items() if count > 1)
     if duplicates:
         raise ValueError(f"{path} 存在重复 case_id：{duplicates}")
+
+    # 加载期就把畸形夹具挡掉：否则会在跑用例时才抛错，炸掉整批（precedence_matches 里还有兜底）
+    for case in cases:
+        for pair in case.precedence:
+            if len(pair) != 2 or pair[0] == pair[1]:
+                raise ValueError(
+                    f"{path} 用例 {case.case_id} 的 precedence 非法：{pair!r}"
+                    "（必须是 [先, 后] 两个不同工具）"
+                )
     return cases
 
 
@@ -155,6 +167,55 @@ def sequence_matches(case: EvalCase, observed: list[str]) -> bool | None:
     if "expected_tool_sequence" in case.model_fields_set:
         return observed == case.expected_tool_sequence
     return None
+
+
+def required_tools(case: EvalCase) -> set[str] | None:
+    """本用例的**必要工具**（声明了工具期望才有意义，否则返回 None = 不判定）。"""
+
+    if (
+        "expected_tool_set" not in case.model_fields_set
+        and "expected_tool_sequence" not in case.model_fields_set
+    ):
+        return None
+    return set(case.expected_tool_set) | set(case.expected_tool_sequence)
+
+
+def tool_recall_ok(case: EvalCase, observed: list[str]) -> bool | None:
+    """``Tool Set Accuracy``：是否**调用了所有必要工具**。
+
+    只看召回、不惩罚多余调用（多余由 ``Extra Tool Call Rate`` 负责）——
+    与 :func:`set_matches` 的「集合完全相等」是两件事，二者都要有：
+    前者回答「该做的做了吗」，后者回答「有没有画蛇添足」。
+    """
+
+    required = required_tools(case)
+    if required is None:
+        return None
+    return required <= set(observed)
+
+
+def precedence_matches(case: EvalCase, observed: list[str]) -> bool | None:
+    """``Precedence Accuracy``：只检查**声明的关键先后约束**。
+
+    例如 ``resolve_datetime`` 必须在 ``get_weather`` 之前（日期要先解析出来）。
+    未声明约束的用例返回 ``None``（不判定），避免把「顺序不唯一」当成错误。
+    """
+
+    if not case.precedence:
+        return None
+    for pair in case.precedence:
+        if len(pair) != 2:
+            raise ValueError(
+                f"{case.case_id}: precedence 必须是 [先, 后] 二元组，收到 {pair!r}"
+            )
+        earlier, later = pair
+        if earlier == later:
+            raise ValueError(f"{case.case_id}: precedence 不能拿同一个工具作先后约束")
+        if earlier not in observed or later not in observed:
+            return False
+        if observed.index(earlier) >= observed.index(later):
+            return False
+    return True
 
 
 def arguments_match(case: EvalCase, observed: dict[str, list[dict[str, Any]]]) -> bool | None:

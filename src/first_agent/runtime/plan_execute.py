@@ -221,6 +221,10 @@ class PlanResult:
     # 降级到 ReAct 时保留其 Thought（CLI/`--show-thought` 统一读本属性）
     thoughts: list[str] = field(default_factory=list)
     degraded_to: str | None = None
+    # 计划本身是否合法（通过 validate_plan / 或合法的 need_info 计划）。
+    # 用于评测的 Plan Validity Rate；**与「计划跑得成不成功」是两件事**：
+    # 非法计划即便成功降级到 ReAct，这里仍然是 False。
+    plan_valid: bool = False
 
 
 # -- 引擎 ------------------------------------------------------------------
@@ -373,6 +377,8 @@ class PlanExecuteEngine:
             result.status = "need_info"
             result.need_info = list(plan.need_info)
             result.answer = f"我还需要知道{'、'.join(plan.need_info)}，才能帮你判断。"
+            # 计划结构自身是合法的（无步骤时 DAG 平凡成立），只是信息不全
+            result.plan_valid = True
             return self._finish(result, started)
         state.pending_slots = []
 
@@ -380,6 +386,9 @@ class PlanExecuteEngine:
         if problems:
             result.plan_problems = problems
             return self._handle_plan_failure(result, messages, state, defaults, budget, started)
+
+        # 校验通过 → 计划合法（后续执行是否成功是另一回事）
+        result.plan_valid = True
 
         # 5) 按拓扑序执行
         ambient = {"user_id": state.user_id}

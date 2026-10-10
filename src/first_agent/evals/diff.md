@@ -1,9 +1,9 @@
 # 评测对比（offline）
 
-- 生成时间：2026-10-10T13:43:17+00:00
-- git commit：1bccbe6
+- 生成时间：2026-10-10T14:00:09+00:00
+- git commit：c947998
 - model：scripted+fake
-- case set hash：6612a021f59b
+- case set hash：7af1d9cc897e
 - prompt version：f61d6c635cb9
 - tool schema version：b0438bbb98a6
 
@@ -13,13 +13,17 @@
 |---|---:|---:|---:|---|---|
 | Argument Accuracy | 100.00 | 100.00 | +0.00 | 越高越好 | ✓ |
 | Assertion Pass Rate | 100.00 | 100.00 | +0.00 | 越高越好 | ✓ |
-| Average Latency | 0.70 | 0.50 | -0.20 | 越低越好 | ✓ |
+| Average Latency | 0.60 | 0.70 | +0.10 | 越低越好 | ⚠ 恶化 |
 | Average Steps | 1.72 | 1.72 | +0.00 | 越低越好 | ✓ |
 | Extra Tool Call Rate | 0.00 | 0.00 | +0.00 | 越低越好 | ✓ |
 | Memory Decision Accuracy | 100.00 | 100.00 | +0.00 | 越高越好 | ✓ |
+| Plan Success Rate | 100.00 | 100.00 | +0.00 | 越高越好 | ✓ |
+| Plan Validity Rate | 100.00 | 100.00 | +0.00 | 越高越好 | ✓ |
+| Precedence Accuracy | 100.00 | 100.00 | +0.00 | 越高越好 | ✓ |
 | Structured Output Validity Rate | 100.00 | 100.00 | +0.00 | 越高越好 | ✓ |
 | Tool Selection Accuracy | 100.00 | 100.00 | +0.00 | 越高越好 | ✓ |
 | Tool Sequence Accuracy | 100.00 | 100.00 | +0.00 | 越高越好 | ✓ |
+| Tool Set Accuracy | 100.00 | 100.00 | +0.00 | 越高越好 | ✓ |
 
 ## 门禁
 

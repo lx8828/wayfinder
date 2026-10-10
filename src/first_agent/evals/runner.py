@@ -20,8 +20,10 @@ from first_agent.evals.case import (
     arguments_match,
     evaluate_assertion,
     memory_delta_matches,
+    precedence_matches,
     sequence_matches,
     set_matches,
+    tool_recall_ok,
 )
 
 
@@ -38,6 +40,9 @@ class RunOutcome:
     memory_actions: dict[str, str] = field(default_factory=dict)
     structured_output_ok: bool = True
     error: str | None = None
+    # 计划是否通过校验（``Plan Validity Rate`` 的「依赖 DAG 合法」一项）；
+    # ReAct 模式或未上报时为 None = 不判定
+    plan_valid: bool | None = None
     # 执行失败的调用（含被依赖失败阻塞的步骤），供「工具必须真的成功」这一判定使用
     tool_errors: list[dict[str, Any]] = field(default_factory=list)
     # 成功调用的观测数据：裁判需要它才能判断「回答里的数字是不是编造的」
@@ -89,6 +94,50 @@ def tool_calls_ok(case: EvalCase, outcome: RunOutcome) -> bool | None:
     return not outcome.tool_errors
 
 
+def plan_validity_ok(
+    case: EvalCase, outcome: RunOutcome, checks: dict[str, bool | None]
+) -> bool | None:
+    """``Plan Validity Rate``：工具集合正确 + 依赖 DAG 合法 + 无失败工具 + 无多余调用。
+
+    四项缺一不可，且只对 **plan** 用例判定（ReAct 没有"计划"这个概念）。
+    没声明工具期望、或引擎没上报 ``plan_valid`` 时返回 ``None``：不臆断。
+
+    「工具失败与降级」类用例（``expect_tool_errors=True``）也返回 ``None``：
+    它们**故意**注入工具失败来验证降级路径，拿"无失败工具"去判它们，
+    衡量的是夹具而不是 Runtime（与 :func:`tool_calls_ok` 同一口径）。
+    """
+
+    if case.mode != "plan" or case.expect_tool_errors:
+        return None
+    declared = checks.get("tool_set")
+    if declared is None:
+        declared = checks.get("tool_sequence")
+    if declared is None or outcome.plan_valid is None:
+        return None
+    extra_calls = max(0, len(outcome.tool_calls) - case.expected_call_count())
+    return (
+        bool(declared)
+        and bool(outcome.plan_valid)
+        and not outcome.tool_errors
+        and extra_calls == 0
+    )
+
+
+def plan_success_ok(
+    case: EvalCase, checks: dict[str, bool | None], assertions_ok: bool | None
+) -> bool | None:
+    """``Plan Success Rate``：计划合法**且**最终结果通过断言。
+
+    未声明断言的用例按"不扣分"处理（``None`` 不算失败），因为该指标衡量的是
+    「计划合法 + 结果可用」，而不是「必须写了断言」。
+    """
+
+    validity = checks.get("plan_validity")
+    if validity is None:
+        return None
+    return bool(validity) and assertions_ok is not False
+
+
 def run_case(case: EvalCase, engine: Engine) -> CaseCheck:
     """执行单个用例并把异常转成结果，避免一个用例炸掉整批。"""
 
@@ -102,12 +151,18 @@ def run_case(case: EvalCase, engine: Engine) -> CaseCheck:
 
     checks: dict[str, bool | None] = {
         "tool_set": set_matches(case, outcome.tool_calls),
+        "tool_recall": tool_recall_ok(case, outcome.tool_calls),
         "tool_sequence": sequence_matches(case, outcome.tool_calls),
+        "precedence": precedence_matches(case, outcome.tool_calls),
         "arguments": arguments_match(case, outcome.arguments),
         "memory_delta": memory_delta_matches(case, outcome.memory_actions),
         "tool_ok": tool_calls_ok(case, outcome),
     }
     assertion_results = [evaluate_assertion(a, outcome.answer) for a in case.assertions]
+    checks["plan_validity"] = plan_validity_ok(case, outcome, checks)
+    checks["plan_success"] = plan_success_ok(
+        case, checks, all(assertion_results) if assertion_results else None
+    )
     return CaseCheck(
         case=case,
         outcome=outcome,

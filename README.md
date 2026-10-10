@@ -16,6 +16,7 @@
 |---|---|---|
 | ReAct 循环 | 原生 `tools + tool_calls`，保留 Thought（可空），支持并行多工具、`call_id` 配对 | `tests/test_react_engine.py` |
 | 多步编排 | `PlanStep` + `depends_on` + `$steps.<id>.<field>` 引用，三步校验 + 拓扑排序 | `tests/test_plan_validation.py`、`test_plan_engine.py` |
+| 顺序类指标可归因 | 拆成四个互补维度：召回（Tool Set）/ 关键先后（Precedence）/ 计划合法性（Plan Validity）/ 端到端（Plan Success），不再只靠"序列完全相等" | `tests/test_plan_metrics.py` |
 | 长期记忆 | LLM **只判关系**（same/conflict/complementary/unsupported），`add/update/keep/skip` 由代码裁决 | `tests/test_memory_service.py` |
 | 会话隔离 | `SessionStore` + 首轮重建上下文；**不用全局单例** | `tests/test_runtime_memory_hook.py` |
 | 短期记忆 | 超过 16 轮未摘要即滚动压缩成 `SessionSummary`（覆盖 + 最近窗口 = 全部轮次，不丢历史） | `tests/test_session_summary.py` |
@@ -132,8 +133,12 @@ ToolAgentRuntime（组合根）            │
 
 | 指标 | 批次 A 均值（波动） | 批次 B 均值（波动） |
 |---|---:|---:|
-| Tool Selection Accuracy | 92.07（4.76） | 98.41（4.76） |
-| Tool Sequence Accuracy | 71.11（20.00） | 64.45（6.67） |
+| Tool Selection Accuracy（集合相等） | 92.07（4.76） | 98.41（4.76） |
+| Tool Set Accuracy（召回） | — | 91.67（11.11） |
+| Tool Sequence Accuracy（序列完全一致） | 71.11（20.00） | 64.45（6.67） |
+| Precedence Accuracy（关键先后） | — | 66.67（**37.50**） |
+| Plan Validity Rate（四要素） | — | 61.90（14.29） |
+| Plan Success Rate（计划合法 + 断言通过） | — | 26.19（7.14） |
 | Argument Accuracy | 89.47（0.00） | 92.98（5.27） |
 | Memory Decision Accuracy | 81.48（2.77） | 80.56（8.33） |
 | Extra Tool Call Rate | 5.28（8.33） | 6.02（2.50） |
@@ -151,8 +156,15 @@ ToolAgentRuntime（组合根）            │
 
 - **稳定**：`Structured Output Validity Rate` 6/6 轮 100%——`chat_json` 状态机 + pydantic 校验
   在真实流量下没崩过；平均延迟 1.63～1.91s；`Memory Decision Accuracy` 80～81%。
-- **最不稳**：`Tool Sequence Accuracy` 单轮 60～80（同批内摆动 20pt）——多步计划里模型会选
-  不同的合法分解与顺序；36 条用例中 13 条的工具序列会跨轮变化。
+- **最不稳**：`Precedence Accuracy` 同批摆动 **37.5pt**，`Tool Sequence Accuracy` 单轮 60～80
+  （摆动 20pt）；36 条用例中 13 条的工具序列会跨轮变化。
+- **拆分指标之后才能归因**：`Tool Set Accuracy` 91.67 明显高于 `Tool Sequence Accuracy` 66.67——
+  模型「该调的工具有没有调」远好于「顺序完全一致」，约 25pt 的差额是**合法换序**；
+  而 `Precedence Accuracy` 66.67 说明其余部分里确实有**语义顺序错误**（先查天气、后解析日期）。
+  只看序列指标时，这两类问题会被合并成一个数字。
+- **端到端要一起读两个数**：`Plan Validity Rate` 61.90（约 38% 的 plan 运行有结构性缺陷）→
+  叠加「答案通过断言」后 `Plan Success Rate` 只剩 26.19。这个落差主要来自**严格子串断言**
+  （`Assertion Pass Rate` 53.33），而不是答案不正确——开放式用例的 judge 通过率是 73.33。
 - **要谨慎引用**：judge 只有 5 条用例太小，**同一用例的裁判结论会翻转**（实测出现
   通过/不通过/通过），单轮 `Task Success Rate` 不可当结论，只能用多轮均值。
 - **约一半用例未通过**（每轮 17～20/36），原因分三类、不能都算模型差：夹具/断言写死了
@@ -228,7 +240,8 @@ tool schema version / case set hash**，可回答「这次指标变化对应哪�
   会跨轮翻转（实测），因此该指标只用多轮均值、不引用单轮数字。
 - **断言对措辞敏感**：`assertions` 是精确子串匹配，真模型换个说法（或换语言）就判失败，
   因此真 LLM 段的 `Assertion Pass Rate` 只有 ~54%，它衡量的是「回答是否命中我写死的措辞」，
-  而不是「回答是否正确」——正确性交给 judge。
+  而不是「回答是否正确」——正确性交给 judge。`Plan Success Rate`（26.19）由这个口径主导，
+  **不能当作「模型只成功 1/4」来读**；要理解端到端能力，必须与 judge 的 73.33 一起看。
 - **夹具世界比模型的动作空间窄**：真跑中出现过 `estimate_travel_time: not_found`——
   模型传入的方式/城市不在 Fake provider 的覆盖范围里，暴露的是夹具覆盖面而非模型错误。
 - **`estimate_travel_time` 是启发式实现**（距离 ÷ 速度），不是实时路况——项目没有接实时交通 API，
@@ -260,6 +273,9 @@ uv run first-agent eval --quiet   # 离线评测门禁，无 API Key
 
 - 用原生 `tools + tool_calls` 替代自由 JSON Action，并以 `call_id` 对齐并行工具结果，
   避免自造协议带来的参数抽取精度损失。
+- 把"顺序对不对"拆成四个互补指标（召回 / 关键先后 / 计划合法性 / 端到端）。
+  实测证明这不是理论洁癖：`Tool Set` 91.67 而 `Tool Sequence` 66.67，
+  约 25pt 的"序列错误"其实是合法换序，单指标会把两类问题混成一个数字。
 - 记忆写入拆成「抽取 → 关系裁决 → 确定性落库」，其中 LLM 只判关系，
   从结构上消除了旧实现「LLM 判 add 但代码不处理导致数据丢失」的缺陷。
 - 建立**两段式评测**（离线夹具硬门禁 + 真 LLM 波动指标）与方向化容差判定，

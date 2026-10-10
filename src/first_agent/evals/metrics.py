@@ -24,13 +24,19 @@ class MetricSpec:
 
 
 METRIC_SPECS: tuple[MetricSpec, ...] = (
-    MetricSpec("Tool Selection Accuracy", higher_is_better=True, stable=True),
+    # 工具选择拆成四个互补维度：序列 / 集合相等 / 召回 / 关键先后
     MetricSpec("Tool Sequence Accuracy", higher_is_better=True, stable=True),
+    MetricSpec("Tool Selection Accuracy", higher_is_better=True, stable=True),
+    MetricSpec("Tool Set Accuracy", higher_is_better=True, stable=True),
+    MetricSpec("Precedence Accuracy", higher_is_better=True, stable=True),
+    MetricSpec("Plan Validity Rate", higher_is_better=True, stable=True),
     MetricSpec("Argument Accuracy", higher_is_better=True, stable=True),
     MetricSpec("Memory Decision Accuracy", higher_is_better=True, stable=True),
     MetricSpec("Structured Output Validity Rate", higher_is_better=True, stable=True),
     MetricSpec("Extra Tool Call Rate", higher_is_better=False, stable=True),
     MetricSpec("Average Steps", higher_is_better=False, stable=True),
+    # 含最终答案的指标：真 LLM 段波动明显，只告警
+    MetricSpec("Plan Success Rate", higher_is_better=True, stable=False),
     MetricSpec("Assertion Pass Rate", higher_is_better=True, stable=False),
     MetricSpec("Average Latency", higher_is_better=False, stable=False),
 )
@@ -55,8 +61,12 @@ def compute_metrics(checks: Sequence["CaseCheck"]) -> dict[str, float]:
         return [check for check in checks if check.checks.get(name) is not None]
 
     for check_name, metric_name in (
-        ("tool_set", "Tool Selection Accuracy"),
         ("tool_sequence", "Tool Sequence Accuracy"),
+        ("tool_set", "Tool Selection Accuracy"),
+        ("tool_recall", "Tool Set Accuracy"),
+        ("precedence", "Precedence Accuracy"),
+        ("plan_validity", "Plan Validity Rate"),
+        ("plan_success", "Plan Success Rate"),
         ("arguments", "Argument Accuracy"),
         ("memory_delta", "Memory Decision Accuracy"),
     ):
