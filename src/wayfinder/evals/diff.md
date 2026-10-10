@@ -1,7 +1,7 @@
 # 评测对比（offline）
 
-- 生成时间：2026-10-10T15:57:29+00:00
-- git commit：08e5c59
+- 生成时间：2026-10-10T16:07:57+00:00
+- git commit：c12367f
 - model：scripted+fake
 - case set hash：d70b65d8e944
 - prompt version：5d942838aae5
@@ -13,7 +13,7 @@
 |---|---:|---:|---:|---|---|
 | Argument Accuracy | 100.00 | 100.00 | +0.00 | 越高越好 | ✓ |
 | Assertion Pass Rate | 100.00 | 100.00 | +0.00 | 越高越好 | ✓ |
-| Average Latency | 0.70 | 0.80 | +0.10 | 越低越好 | ⚠ 恶化 |
+| Average Latency | 0.60 | 0.60 | +0.00 | 越低越好 | ✓ |
 | Average Steps | 1.72 | 1.72 | +0.00 | 越低越好 | ✓ |
 | Extra Tool Call Rate | 0.00 | 0.00 | +0.00 | 越低越好 | ✓ |
 | Memory Decision Accuracy | 100.00 | 100.00 | +0.00 | 越高越好 | ✓ |

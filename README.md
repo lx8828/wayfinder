@@ -232,32 +232,34 @@ ToolAgentRuntime（组合根）            │
 **离线段**：全部稳定指标 100.00 —— 这是**期望值**（夹具就是"一个称职的模型"），
 它衡量的是 Runtime 有没有忠实执行，价值在回归检测，不代表真实能力。
 
-**真 LLM 段**（deepseek-chat，3 轮 × 36 条 = 108 次用例执行；「波动」= 同批 3 轮的最大−最小）：
+**真 LLM 段**（deepseek-chat，3 轮 × 36 条 = 108 次用例执行，**v2.0.0 冻结时实测**；
+「波动」= 同批 3 轮的最大−最小）：
 
 | 指标 | 均值（波动） |
 |---|---:|
 | Tool Selection Accuracy（工具集合完全相等） | 98.41（4.76） |
 | Tool Set Accuracy（必要工具召回） | 90.74（2.78） |
-| Tool Sequence Accuracy（序列完全一致） | 71.11（6.66） |
-| Precedence Accuracy（关键先后约束） | 62.50（0.00） |
-| Plan Validity Rate（计划四要素齐全） | 66.67（7.14） |
-| Plan Success Rate（计划合法 + 答案通过断言） | 42.86（14.29） |
-| Argument Accuracy | 92.98（5.27） |
-| Memory Decision Accuracy | 83.34（8.33） |
-| Extra Tool Call Rate（多余调用） | 0.93（2.78） |
-| Assertion Pass Rate | 71.11（3.33） |
-| Average Steps | 1.46（0.06） |
-| Average Latency | 1659.2 ms（29.5） |
+| Tool Sequence Accuracy（序列完全一致） | 62.22（6.67） |
+| Precedence Accuracy（关键先后约束） | 62.50（25.00） |
+| Plan Validity Rate（计划四要素齐全） | 64.29（14.29） |
+| Plan Success Rate（计划合法 + 答案通过断言） | 47.62（7.14） |
+| Argument Accuracy | 94.74（0.00） |
+| Memory Decision Accuracy | 84.26（5.55） |
+| Extra Tool Call Rate（多余调用） | 5.27（4.99） |
+| Assertion Pass Rate | 72.22（3.33） |
+| Average Steps | 1.51（0.09） |
+| Average Latency | 1678.3 ms（336.4） |
 | Structured Output Validity Rate | **100.00（0.00）** |
-| Run-to-run Consistency（结论 / 工具序列） | 86.11% / 88.89% |
-| Task Success Rate（15 条开放式用例，3 轮） | 82.22（93.33 / 73.33 / 80.00） |
+| Run-to-run Consistency（结论 / 工具序列） | 88.89% / 75.00% |
+| Task Success Rate（15 条开放式用例，3 轮） | 73.33（73.33 / 66.67 / 80.00） |
 
 怎么读这些数字（写在前面，免得被误读）：
 
 - **`Structured Output Validity Rate` 稳定 100%**：`chat_json` 的「解析 → 校验 → 错误回灌 →
   重试」状态机在真实流量下没有崩过一例。
-- **波动是真的，且不小**：`Plan Success Rate` 同批摆动 ±14.29、`Precedence Accuracy` 在
-  8 条样本上摆动曾达 37.5pt。**引用任何数字都要连波动一起引用**，单轮数字不能当结论。
+- **波动是真的，且不小**：`Precedence Accuracy` 同批摆动 25pt、`Plan Validity Rate` 14.3pt
+  （8 条样本的样本量下，历史上曾达 37.5pt）。**引用任何数字都要连波动一起引用**，
+  单轮数字不能当结论。
 - **指标是拆分过的，才能归因**：`Tool Set`（该调的调了吗）与 `Tool Sequence`（顺序完全一致吗）
   是两个数——前者高于后者说明相当一部分"序列错误"其实是**合法换序**；
   而 `Precedence` 只看声明过的关键先后约束，才能识别出真正的语义顺序错误。
@@ -333,8 +335,8 @@ tool schema version / case set hash**，可以回答"这次指标变化对应哪
 - **步行/骑行有距离上限**：高德返回 `OVER_DIRECTION_RANGE` 时映射为 `not_found`（不重试），
   与真正的服务故障（`unavailable`，可重试）区分开。
 - **LLM-as-Judge 的局限**：与作答复用同一客户端（仅 prompt 独立），判定偏宽松；
-  `Task Success Rate` 只统计裁判成功的样本。实测 15 条里有 5 条会在轮间翻转
-  （其中 2 条与记忆取值直接相关），因此轮间摆动仍可达 20pt——**只能看多轮均值**，
+  `Task Success Rate` 只统计裁判成功的样本。少数用例会在轮间翻转，因此摆动明显：
+  v2.0.0 冻结时三轮为 `73.33 / 66.67 / 80.00`（摆动 13.3pt）——**只能看多轮均值**，
   CLI 摘要会把单条权重与摆动一起打出来。
 - **端到端指标受断言口径影响**：`Plan Success Rate` = 计划合法 + 断言通过。
   断言已按证据层重构（见上），但计划类用例仍要求回答命中关键实体，
