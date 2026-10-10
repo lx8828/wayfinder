@@ -4,7 +4,7 @@
 - 仓库：`first-agent`（本文档位于 `docs/design.md`，随代码一同版本化）
 - 版本：v0.4
 - 日期：2026-10-10
-- 状态：Proposed（S0–S7 已实现，见 0.1）
+- 状态：Proposed（S0–S8 已实现，见 0.1）
 - 术语：本文档版本为 v0.4；产品目标版本称 **v2**；旧手写实现称 **v1**（归入 `archive/handwritten_v1/`）
 - 目标：围绕 Agent 编排、原生工具调用、短期/长期记忆和离线评测，把项目二从功能 Demo 升级为可测试、可观测、可回归的 Agent Runtime
 
@@ -74,6 +74,7 @@
 | R16 | 运行时在**两种模式**下都注入 `user_id` 环境参数 | 此前只有 Plan 注入，导致 `get_calendar_events` 在 ReAct 模式**永远无法成功**（模型不可能知道 user_id） | 8.2 / 11.4 |
 | R17 | 用例级新增「工具必须真的成功」判定（`tool_ok`） | 工具全挂但工具集合/参数恰好正确时，指标会假装一切正常（S7 首次运行就踩到：`invalid_output` 被 100% 的指标掩盖） | 16.2 |
 | R18 | LLM-as-Judge 必须同时看到**工具观测数据** | 不给观测，裁判会把回答里的真实数值误判为「编造事实」（首次真实运行实测） | 16.3 |
+| R19 | `TRACE_MODE` / `FIRST_AGENT_TRACE_DIR` 真正接入 CLI；新增 `core/inspect.py` 承载 `memory` / `trace` 的数据层 | 前两个环境变量文档写了但代码从未读取（文档与实现不符）；运维视图放在 CLI 里无法单测 | 15 / 5 |
 
 **实测发现（真实冒烟，S3–S4）**：DeepSeek 在带 `tool_calls` 的响应里**有时输出 `content`（Thought）、有时不输出**——同一模型对同类问题先后返回 `content=null` 与 `content="I'll check the current weather in Beijing for you."`。这确认了方案 A（Thought 可选）是唯一稳妥的选择。另注意 **Thought 语言不受输入语言约束**（中文输入得到英文 Thought），如需统一只能在 prompt 中显式要求。
 
@@ -241,6 +242,7 @@ src/first_agent/
 │   ├── db.py              # ✅ 通用 SQLite 封装（R7，无业务 schema）
 │   ├── session.py         # ✅ SessionStore / SessionResolver
 │   ├── tracing.py         # ✅ TraceLogger 与脱敏
+│   ├── inspect.py         # ✅ 只读运维视图（memory / trace 子命令的数据层，S8）
 │   └── engine.py          # ✅ 组合根 ToolAgentRuntime（唯一跨层 import 点）
 ├── schemas/
 │   ├── tool.py            # ✅ ToolSpec / ToolCall / ToolResult / NormalizedAssistantTurn
@@ -286,10 +288,14 @@ src/first_agent/
 │   ├── judge_cases.jsonl  # ✅ 5 条开放式用例
 │   ├── baseline.json      # ✅ 离线基线（硬门禁）
 │   └── current.json / diff.md        # ✅ 本次结果与对比
-└── main.py                # ✅ CLI（chat / eval）
+└── main.py                # ✅ CLI（chat / eval / memory / trace）
 
-tests/                     # ✅ 380 个离线测试（无 API Key 可跑）
+tests/                     # ✅ 397 个离线测试（无 API Key 可跑）
 var/                       # ✅ 本地 SQLite 与 Trace（已 gitignore）
+
+.env.example               # ✅ 环境变量示例（不含密钥）
+.github/workflows/ci.yml   # ✅ CI：pytest + 离线评测门禁（均不需要 API Key）
+README.md                  # ✅ 用法、架构、评测读数与已知限制
 
 scripts/
 └── migrate_memory_v1.py   # ✅ v1→v2 迁移 CLI（薄包装，逻辑在 memory/migrate.py）
@@ -1014,6 +1020,13 @@ var/traces/YYYY-MM-DD.jsonl
 - 保留 7 天或最多 1000 条 run，取先到者。
 - 错误日志不得记录 API Key。
 
+实现补充（S8）：
+
+- `TRACE_MODE` 与 `FIRST_AGENT_TRACE_DIR` 已真正接入 CLI（R19，此前文档写了但代码未读取）。
+- **已知缺口**：`final_answer` 等自由文本只做手机号/邮箱掩码，用户自报的姓名可能原样落盘。
+  因此 `var/traces/` 不进版本库、不外发。要彻底避免只能不落答案文本，
+  但那会让 Trace 失去排障价值——这是**有意的取舍**，写进 README 的隐私说明。
+
 ---
 
 ## 16. 评测设计
@@ -1252,6 +1265,10 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 | 裁判失败样本不计入成功率 | `tests/test_eval_suite.py::test_task_success_rate_excludes_unjudged_samples` | ✅ |
 | 开放式用例端到端可判定 | `tests/test_eval_suite.py::test_run_judge_cases_end_to_end_with_a_fake_judge` | ✅ |
 | 基线/结果/对比三件套落盘 | `tests/test_eval_suite.py::test_write_outputs_creates_current_and_diff` | ✅ |
+| CLI 子命令齐备（无「尚未实现」） | `tests/test_cli.py::test_cli_surface_is_complete` | ✅ |
+| `memory list/show/rm` 可用 | `tests/test_cli_inspect.py::test_memory_show_and_rm_roundtrip` | ✅ |
+| `trace stats/tail` 可用 | `tests/test_cli_inspect.py::test_trace_stats_aggregates_runs_and_statuses` | ✅ |
+| Trace 读取容忍坏行 | `tests/test_cli_inspect.py::test_read_trace_events_skips_malformed_lines` | ✅ |
 | 跨会话记忆恢复 | `tests/test_memory_store.py` + `tests/test_runtime_engine.py` | ✅（评测用例样本待 S7 扩到 30～40 条） |
 
 ---
@@ -1326,7 +1343,7 @@ v2 只建立在 `first-agent/`。
 
 ## 19. 里程碑
 
-> 实现进度（截至本文档 v0.4）：**Phase 0 ✅ / Phase 1 🟡 / Phase 2 ✅ / Phase 3a ✅ / Phase 3b ✅ / Phase 4 ✅ / Phase 5 ⏳**
+> 实现进度（截至本文档 v0.4）：**Phase 0 ✅ / Phase 1 🟡 / Phase 2 ✅ / Phase 3a ✅ / Phase 3b ✅ / Phase 4 ✅ / Phase 5 ✅**
 >
 > 实际执行被拆成 S0～S8 若干小步，每步一个 commit + 一次全量测试。其中 **S2「护栏提前」** 把 Phase 4
 > 的测试骨架（ScriptedLLM / Fake provider / runner / metrics / 回归门禁）提前实现，理由：没有护栏
@@ -1340,7 +1357,7 @@ v2 只建立在 `first-agent/`。
 | Phase 3a Plan 结构与依赖 | ✅ | S6a |
 | Phase 3b 失败恢复 | ✅ | S6b |
 | Phase 4 评测与回归 | ✅ | S7：36 条用例 + 离线硬门禁 + 真 LLM 段 + LLM-as-Judge |
-| Phase 5 文档与可选优化 | ⏳ | S8（含 README 重写） |
+| Phase 5 文档与可选优化 | ✅ | S8（含 README 重写；Router / FastAPI 保留为可选，未做） |
 
 ### Phase 0 ✅：归档与入口保护，0.5 天
 
@@ -1442,13 +1459,24 @@ LLM-as-Judge（`--judge`）、元数据落盘（commit / model / prompt / tool s
 价值在回归检测；真实段才是模型能力。两段差距（如 `Tool Sequence Accuracy`
 100 → 80）正是 v2 想量化的东西，也是 v1 完全没有的数字。
 
-### Phase 5 ⏳：文档与可选优化，0.5～1 天
+### Phase 5 ✅：文档与可选优化，0.5～1 天
 
 - 完善 README 和架构图（骨架已在 Phase 1 建立）。
 - CLI：chat、memory、trace、eval。
 - 可选 FastAPI。
 - 可选启发式 Router 和 route accuracy 评测。
 - 更新简历项目描述。
+
+**已满足**：README 重写（定位 / 用法 / 架构 / 评测读数 / 已知限制 / 简历描述）、
+四个子命令齐备（`memory list|show|rm`、`trace stats|tail`）、`.env.example`、
+CI 工作流（pytest + 离线门禁，均不需要 API Key）。
+
+**有意不做**（保留为可选，并已写入 README 的「已知限制」）：
+
+- **自动 Router**：A3 已判定 v2 由用户显式选模式；要做自动路由，得先有 route accuracy
+  用例集，否则只是增加一个无法度量的分支。
+- **FastAPI 服务层**：内核已按多会话设计（`SessionStore` + 每轮重建上下文），
+  接入时不需改内核，因此不作为交付项。
 
 总时间盒：7～8 天。
 

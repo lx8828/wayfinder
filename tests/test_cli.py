@@ -1,6 +1,8 @@
-"""CLI 参数解析与未实现子命令的行为测试（不发起网络请求）。"""
+"""CLI 参数解析与子命令行为测试（不发起网络请求）。"""
 
 from __future__ import annotations
+
+import argparse
 
 import pytest
 
@@ -28,10 +30,24 @@ def test_unknown_mode_is_rejected_by_parser(capsys):
         build_parser().parse_args(["chat", "北京天气", "--mode", "nope"])
 
 
-def test_pending_subcommands_report_phase(capsys):
-    for name in ("memory", "trace"):
-        assert main([name]) == 2
-        assert "尚未实现" in capsys.readouterr().err
+def test_cli_surface_is_complete():
+    """Phase 5 收口后不应再存在「尚未实现」的子命令。"""
+
+    parser = build_parser()
+    subparsers = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+
+    assert set(subparsers.choices) == {"chat", "eval", "memory", "trace"}
+
+
+def test_memory_requires_an_action():
+    with pytest.raises(SystemExit) as excinfo:
+        main(["memory"])
+
+    assert excinfo.value.code == 2
 
 
 def test_eval_subcommand_runs_offline(tmp_path, capsys):

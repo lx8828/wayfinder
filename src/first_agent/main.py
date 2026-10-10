@@ -1,7 +1,7 @@
-"""v2 命令行入口。
+"""v2 命令行入口：``chat`` / ``eval`` / ``memory`` / ``trace``。
 
-已实现：``chat``（S3 react / S6 plan）、``eval``（S7 评测与回归门禁）
-未实现：``memory`` / ``trace``（S8）
+CLI 只负责参数解析与打印；数据读取与统计在 ``core.inspect``，
+装配与业务在 ``core.engine`` / ``runtime``，以保证这些能力都可被单元测试直接调用。
 """
 
 from __future__ import annotations
@@ -13,18 +13,13 @@ from typing import Sequence
 
 from first_agent import __version__
 
-_PENDING = {
-    "memory": "S8",
-    "trace": "S8",
-}
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="first-agent", description="Tool Agent Runtime (v2)")
     parser.add_argument("--version", action="store_true", help="打印版本并退出")
     subparsers = parser.add_subparsers(dest="command")
 
-    chat = subparsers.add_parser("chat", help="单轮对话（ReAct）")
+    chat = subparsers.add_parser("chat", help="单轮对话（--mode react / plan）")
     chat.add_argument("message", help="用户输入")
     chat.add_argument("--mode", default="react", choices=["react", "plan"], help="对话模式")
     chat.add_argument("--user", default="demo", help="用户 ID（用于 Trace）")
@@ -49,8 +44,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evals.add_argument("--quiet", action="store_true", help="只输出门禁结论与失败用例")
 
-    for name, phase in _PENDING.items():
-        subparsers.add_parser(name, help=f"未实现（{phase}）")
+    memory = subparsers.add_parser("memory", help="查看 / 管理长期记忆")
+    memory.add_argument("action", choices=["list", "show", "rm"], help="list / show / rm")
+    memory.add_argument("key", nargs="?", help="show 与 rm 需要指定 key")
+    memory.add_argument("--user", default="demo", help="用户 ID（默认 demo）")
+    memory.add_argument("--all-users", action="store_true", help="list 时列出全部用户")
+    memory.add_argument("--json", action="store_true", help="以 JSON 输出")
+
+    trace = subparsers.add_parser("trace", help="查看 Trace 记录与统计")
+    trace.add_argument("action", nargs="?", default="stats", choices=["tail", "stats"])
+    trace.add_argument("--n", type=int, default=20, help="tail 显示条数（默认 20）")
+    trace.add_argument("--dir", default=None, help="Trace 目录（默认 var/traces）")
+    trace.add_argument("--json", action="store_true", help="以 JSON 输出")
     return parser
 
 
@@ -68,11 +73,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_chat(args)
     if args.command == "eval":
         return _run_eval(args)
+    if args.command == "memory":
+        return _run_memory(args)
+    if args.command == "trace":
+        return _run_trace(args)
 
-    print(
-        f"[first-agent] 子命令 {args.command!r} 尚未实现，计划于 {_PENDING[args.command]} 提供。",
-        file=sys.stderr,
-    )
+    print(f"[first-agent] 未知子命令：{args.command!r}", file=sys.stderr)
     return 2
 
 
@@ -113,7 +119,11 @@ def _run_chat(args: argparse.Namespace) -> int:
         print("[first-agent] 缺少 DEEPSEEK_API_KEY（可在 .env 中配置）。", file=sys.stderr)
         return 2
 
-    tracer = TraceLogger(enabled=not args.no_trace)
+    tracer = TraceLogger(
+        directory=os.getenv("FIRST_AGENT_TRACE_DIR", "var/traces"),
+        mode=os.getenv("TRACE_MODE", "safe"),
+        enabled=not args.no_trace,
+    )
     sdk = OpenAI(
         api_key=api_key,
         base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
@@ -280,6 +290,110 @@ def _run_eval(args: argparse.Namespace) -> int:
         return 0 if args.no_gate else 1
 
     print("[first-agent] 门禁通过 ✅")
+    return 0
+
+
+def _run_memory(args: argparse.Namespace) -> int:
+    """查看 / 管理长期记忆（只读为主，rm 是显式删除）。"""
+
+    import json
+    from pathlib import Path
+
+    from first_agent.core import inspect as inspect_mod
+    from first_agent.core.db import Database
+    from first_agent.memory.store import MemoryStore
+
+    if args.action in ("show", "rm") and not args.key:
+        print(f"[first-agent] memory {args.action} 需要指定 key。", file=sys.stderr)
+        return 2
+
+    db_path = Path(os.getenv("FIRST_AGENT_DB", "var/agent.db"))
+    if args.action == "list" and not db_path.exists():
+        print(f"[first-agent] 数据库不存在：{db_path}（还没有任何记忆）")
+        return 0
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with Database(db_path) as db:
+        store = MemoryStore(db)
+
+        if args.action == "list":
+            by_user = inspect_mod.list_memories(
+                store, None if args.all_users else args.user
+            )
+            print(
+                inspect_mod.memory_as_json(by_user)
+                if args.json
+                else inspect_mod.format_memories(by_user)
+            )
+            return 0
+
+        if args.action == "show":
+            record = store.get(args.user, args.key)
+            if record is None:
+                print(f"[first-agent] 没有记忆：{args.user}/{args.key}", file=sys.stderr)
+                return 1
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "user_id": record.user_id,
+                            "key": record.key,
+                            "value": record.value,
+                            "category": record.category,
+                            "source": record.source,
+                            "updated_at": record.updated_at,
+                            "last_seen_at": record.last_seen_at,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+            else:
+                print(
+                    f"{record.key} = {record.value}"
+                    f"（category={record.category}，来源={record.source}，"
+                    f"最近命中={record.last_seen_at}）"
+                )
+            return 0
+
+        removed = store.delete(args.user, args.key)
+        print(f"[first-agent] {'已删除' if removed else '不存在'}：{args.user}/{args.key}")
+        return 0 if removed else 1
+
+
+def _run_trace(args: argparse.Namespace) -> int:
+    """查看 Trace 最近事件与聚合统计（Trace 在写入时已按 TRACE_MODE 脱敏）。"""
+
+    import json
+    from pathlib import Path
+
+    from first_agent.core import inspect as inspect_mod
+
+    directory = Path(args.dir or os.getenv("FIRST_AGENT_TRACE_DIR", "var/traces"))
+    limit = args.n if args.action == "tail" else 5000
+    read = inspect_mod.read_trace_events(directory, limit=limit)
+
+    if not read.events:
+        print(f"[first-agent] 没有找到 Trace 记录：{directory}", file=sys.stderr)
+        return 0
+
+    if args.action == "tail":
+        print(
+            json.dumps(read.events, ensure_ascii=False, indent=2)
+            if args.json
+            else inspect_mod.format_events(read.events, limit=args.n)
+        )
+    else:
+        stats = inspect_mod.trace_stats(read.events)
+        print(
+            json.dumps(stats, ensure_ascii=False, indent=2, sort_keys=True)
+            if args.json
+            else inspect_mod.format_stats(stats)
+        )
+
+    if read.malformed:
+        print(f"[first-agent] 跳过 {read.malformed} 条无法解析的记录", file=sys.stderr)
     return 0
 
 

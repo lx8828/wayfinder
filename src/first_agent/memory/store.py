@@ -68,6 +68,12 @@ class MemoryStore:
     def values(self, user_id: str) -> dict[str, str]:
         return {key: record.value for key, record in self.all(user_id).items()}
 
+    def users(self) -> list[str]:
+        """有长期记忆的全部 ``user_id``（供 ``memory list`` 使用）。"""
+
+        rows = self.db.query("SELECT DISTINCT user_id FROM memories ORDER BY user_id")
+        return [row["user_id"] for row in rows]
+
     def profile(self, user_id: str) -> UserProfile:
         """生成只读的 ``UserProfile`` 视图（design.md 12.1）。"""
 
@@ -96,6 +102,14 @@ class MemoryStore:
         elif action == "update":
             self._update(candidate)
         return action
+
+    def delete(self, user_id: str, key: str) -> bool:
+        """删除一条记忆；返回是否真的删掉了（供 ``memory rm`` 使用）。"""
+
+        if self.get(user_id, key) is None:
+            return False
+        self.db.execute("DELETE FROM memories WHERE user_id = ? AND key = ?", (user_id, key))
+        return True
 
     def mark_seen(self, user_id: str, key: str) -> None:
         """``keep`` 时刷新 ``last_seen_at``（design.md 12.4 的字段行为）。"""

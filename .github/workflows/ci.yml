@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: 同步依赖
+        run: uv sync --frozen
+
+      # 全部离线：ScriptedLLM + Fake provider，不需要任何 API Key
+      - name: 单元测试
+        run: uv run pytest -q
+
+      # 离线评测硬门禁：与仓库内 baseline.json 对比，稳定指标恶化即失败（exit 1）
+      - name: 离线评测门禁
+        run: uv run first-agent eval --quiet
+
+      - name: 上传评测产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: |
+            src/first_agent/evals/current.json
+            src/first_agent/evals/diff.md

@@ -2,8 +2,8 @@
   "metadata": {
     "case_count": 36,
     "case_set_hash": "6612a021f59b",
-    "generated_at": "2026-10-09T20:13:54+00:00",
-    "git_commit": "928509d",
+    "generated_at": "2026-10-10T12:24:16+00:00",
+    "git_commit": "b85865a",
     "mode": "offline",
     "model": "scripted+fake",
     "prompt_version": "f61d6c635cb9",
@@ -12,7 +12,7 @@
   "metrics": {
     "Argument Accuracy": 100.0,
     "Assertion Pass Rate": 100.0,
-    "Average Latency": 0.7,
+    "Average Latency": 0.6,
     "Average Steps": 1.72,
     "Extra Tool Call Rate": 0.0,
     "Memory Decision Accuracy": 100.0,
