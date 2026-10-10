@@ -2,8 +2,9 @@
 
 真实调用要联网 + 有效 Key，因此这里用**按高德文档构造的桩响应**把链路测死：
 
-- 地名解析**先 POI 搜索（``/v3/place/text``）、再退回地理编码**（``/v3/geocode/geo``）——
-  实测 geocode 把「解放碑」的首条给了四川广元的住宅区、把「江北机场」解析到宁波江北区
+- 地名解析**只用 POI 文本搜索**（``/v3/place/text``）：实测地理编码会把「解放碑」首条给到
+  四川广元的住宅区、把「江北机场」解析到宁波江北区；而 POI 无结果时地理编码必然给一个
+  "道路/村庄级"的随意城市（「人民路」→ 商洛、「火车站」→ 陇南徽县火站村）→ 因此改为追问
 - v3 用 ``status``/``info``；v4（骑行）用 ``errcode``/``errmsg``/``data`` —— 两套结构不能混
 - 数值字段是**字符串**秒/米，要换算成分钟/公里
 - 每个请求都必须带 ``key``（漏掉会得到 ``INVALID_USER_KEY``，像"Key 无效"实为请求缺参）
@@ -16,6 +17,7 @@ import pytest
 
 from first_agent.providers import AmapTravelProvider
 from first_agent.providers.base import (
+    ProviderAmbiguousPlace,
     ProviderNotFound,
     ProviderTimeout,
     ProviderUnavailable,
@@ -35,16 +37,23 @@ POI_RESULTS = {
 
 
 def place_payload(keywords: str) -> dict:
-    return {"status": "1", "info": "OK", "count": "1", "pois": POI_RESULTS.get(keywords, [])}
+    """已知关键字返回真实样例；其余关键字给一个默认坐标，让模式/错误类测试不必关心解析。"""
+
+    pois = POI_RESULTS.get(keywords)
+    if pois is None:
+        pois = [poi(keywords, "106.550464,29.563761", "500103")]
+    return {"status": "1", "info": "OK", "count": str(len(pois)), "pois": pois}
 
 
 def payload_for(url: str, params: dict) -> object:
-    """按 URL 分派桩响应（POI 搜索按 keywords 返回，便于验证解析顺序）。"""
+    """按 URL 分派桩响应（POI 搜索按 keywords 返回，便于验证解析顺序）。
+
+    ⚠️ 这里**故意不覆盖 ``geocode/geo``**：实现已经不用地理编码兜底了，
+    任何意外的请求都会走 ``AssertionError`` 分支暴露出来。
+    """
 
     if "place/text" in url:
         return place_payload(str(params.get("keywords", "")))
-    if "geocode/geo" in url:
-        return GEO_OK
     if "direction/driving" in url:
         return DRIVING_OK
     if "direction/walking" in url:
@@ -55,19 +64,6 @@ def payload_for(url: str, params: dict) -> object:
         return TRANSIT_OK
     raise AssertionError(f"桩未覆盖的 URL：{url}")
 
-
-GEO_OK = {
-    "status": "1",
-    "info": "OK",
-    "geocodes": [
-        {
-            "formatted_address": "重庆市渝中区某路 1 号",
-            "city": "重庆市",
-            "adcode": "500103",
-            "location": "106.550464,29.563761",
-        }
-    ],
-}
 
 DRIVING_OK = {
     "status": "1",
@@ -131,8 +127,8 @@ def urls(client: StubClient) -> list[str]:
 # -- 地名解析 --------------------------------------------------------------
 
 
-def test_poi_search_is_used_before_geocoding():
-    """POI 搜索优先：实测 geocode 会把手边地标解析到别的城市。"""
+def test_place_is_resolved_with_poi_search_only():
+    """解析只走 POI 文本搜索：实测地理编码会把手边地标解析到别的城市。"""
 
     provider, client = build()
 
@@ -140,20 +136,25 @@ def test_poi_search_is_used_before_geocoding():
 
     assert "place/text" in client.requests[0][0]
     assert client.requests[0][1]["keywords"] == "解放碑"
-    # 整轮不应出现地理编码请求（POI 已解析成功）
-    assert all("geocode/geo" not in url for url, _ in client.requests)
+    # 全程不出现地理编码请求（实现已弃用它，桩也没覆盖 → 出现即报错）
+    assert all("geocode" not in url for url, _ in client.requests)
 
 
-def test_geocoding_is_the_fallback_when_poi_is_empty():
-    """纯地址（POI 搜不到）要能退回地理编码，而不是直接失败。"""
+def test_poi_miss_asks_for_more_information_instead_of_guessing():
+    """POI 无结果时**不能**退回地理编码：那会给一个"道路/村庄级"的随意城市。
+
+    实测：地理编码把「人民路」解析成陕西省商洛市的某条道路（算出 722 公里），
+    把「火车站」解析成甘肃省陇南市徽县「火站村」——"信息不够具体"被变成自信的错答。
+    """
 
     provider, client = build({"place/text": {"status": "1", "info": "OK", "pois": []}})
 
-    result = provider.estimate("某某路 1 号", "成都", "car")
+    with pytest.raises(ProviderAmbiguousPlace, match="重庆人民路"):
+        provider.estimate("人民路", "观音桥", "car")
 
-    assert result["duration_minutes"] == 229
-    assert result["origin_resolved"] == "重庆市渝中区某路 1 号"  # 来自 geocode 的 formatted_address
-    assert any("geocode/geo" in url for url, _ in client.requests)
+    # 没有退路可走：除了那次 POI 搜索，一个额外请求都没发
+    assert len(client.requests) == 1
+    assert "geocode" not in client.requests[0][0]
 
 
 def test_resolved_names_are_returned_for_verification():
@@ -181,20 +182,31 @@ def test_resolution_is_cached_within_the_process():
     assert second == 2  # 第二次全部命中缓存
 
 
-def test_unknown_place_is_not_found():
-    provider, _ = build({"place/text": {"status": "1", "info": "OK", "pois": []}, "geocode/geo": {"status": "1", "info": "OK", "geocodes": []}})
+def test_unresolvable_place_says_information_is_insufficient():
+    """两个解析器都没结果时，**不是**"此地不存在"，而是信息不够具体（如「人民路」）。
 
-    with pytest.raises(ProviderNotFound, match="找不到这个地点"):
-        provider.estimate("不存在的地方", "成都", "car")
+    这类失败补一句城市就能成功，所以要用专门的错误码交给运行时去追问。
+    """
+
+    provider, _ = build({"place/text": {"status": "1", "info": "OK", "pois": []}})
+
+    with pytest.raises(ProviderAmbiguousPlace) as excinfo:
+        provider.estimate("人民路", "成都", "car")
+
+    assert excinfo.value.code == "ambiguous_place"
+    # 仍属于 not_found 家族：不区分两者的调用方照旧按"没找到"处理
+    assert isinstance(excinfo.value, ProviderNotFound)
+    assert "重庆人民路" in str(excinfo.value)  # 给用户一个可照做的例子
 
 
-def test_resolved_point_without_location_falls_back():
-    """POI 命中但没有坐标 → 不能算解析成功，要继续退回 geocode。"""
+def test_poi_without_location_counts_as_unresolved():
+    """POI 命中但没有坐标 → 不能算解析成功，同样要追问。"""
 
     broken = {"status": "1", "info": "OK", "pois": [{"name": "缺坐标的 POI"}]}
     provider, _ = build({"place/text": broken})
 
-    assert provider.estimate("A", "B", "car")["origin_resolved"] == "重庆市渝中区某路 1 号"
+    with pytest.raises(ProviderAmbiguousPlace):
+        provider.estimate("A", "B", "car")
 
 
 # -- 模式分流 --------------------------------------------------------------
@@ -273,7 +285,7 @@ def test_unsupported_mode_lists_alternatives():
 )
 def test_amap_error_info_becomes_actionable_message(info, fragment):
     payload = {"status": "0", "info": info}
-    provider, _ = build({"place/text": payload, "geocode/geo": payload})
+    provider, _ = build({"place/text": payload})
 
     with pytest.raises(ProviderUnavailable) as excinfo:
         provider.estimate("A", "B", "car")
@@ -410,3 +422,78 @@ def test_tool_integration_carries_real_fields_through_the_contract():
     assert result.data["destination_resolved"] == "重庆江北国际机场"
     assert result.data["source"] == "amap-driving"
     assert result.data["mode"] == "car"  # 别名在契约层已归一化
+
+
+# -- 不确定就问：provider → 执行器 → Plan 引擎（R30） ---------------------
+
+
+EMPTY_RESOLUTION = {
+    "place/text": {"status": "1", "info": "OK", "pois": []},
+}
+
+
+def _registry_with(provider):
+    """只注册本用例用到的工具（计划里出现的每个工具都必须在注册表里，否则会算 unknown_tool）。"""
+
+    from first_agent.tools.builtin import make_time_tool, make_travel_time_tool
+    from first_agent.tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register(make_travel_time_tool(provider))
+    registry.register(make_time_tool())
+    return registry
+
+
+def test_ambiguous_place_is_not_retried():
+    """补一句城市就能成功的事，重试同样的参数毫无意义（只调一次）。"""
+
+    from first_agent.schemas.tool import ToolCall
+    from first_agent.tools.executor import ToolExecutor
+
+    provider, _ = build(dict(EMPTY_RESOLUTION))
+    executor = ToolExecutor(_registry_with(provider))
+
+    result = executor.execute(
+        ToolCall(
+            call_id="c1",
+            tool_name="estimate_travel_time",
+            arguments={"origin": "人民路", "destination": "观音桥", "mode": "car"},
+        )
+    )
+
+    assert result.error_code == "ambiguous_place"
+    assert len(provider.calls) == 1
+    assert "重庆人民路" in (result.error_message or "")
+
+
+def test_plan_engine_turns_ambiguous_place_into_a_follow_up_question():
+    """Plan 引擎要把「信息不够具体」转成**追问用户**，而不是报"查不到"或继续跑。"""
+
+    from first_agent.evals.scripted import json_obj
+    from tests.plan_helpers import build_engine, user_messages
+
+    provider, _ = build(dict(EMPTY_RESOLUTION))
+    plan = {
+        "need_info": [],
+        "steps": [
+            {
+                "id": 0,
+                "tool": "estimate_travel_time",
+                "arguments": {"origin": "人民路", "destination": "观音桥", "mode": "car"},
+                "depends_on": [],
+            },
+            # 独立的第二步：一旦追问，就不该再执行它（用户补充的话可能改变整个计划）
+            {"id": 1, "tool": "get_current_time", "arguments": {}, "depends_on": []},
+        ],
+    }
+    engine, sdk = build_engine(
+        [json_obj({}), json_obj(plan)], registry=_registry_with(provider)
+    )
+
+    result = engine.run_messages(user_messages("从人民路到观音桥开车要多久？"))
+
+    assert result.status == "need_info"
+    assert result.need_info == ["origin"]  # 从失败参数里推断出该补哪个槽位
+    assert "请补充所在城市" in result.answer  # 回答就是一句可操作的追问
+    assert result.tool_calls == ["estimate_travel_time"]  # 第二步没被执行
+    assert len(sdk.calls) == 2  # 槽位 + 计划：没有再为汇总多花一次 LLM 调用

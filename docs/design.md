@@ -71,7 +71,8 @@
 | R10 | 新增 `runtime/slots.py`（`SlotExtractor`） | design 8.2 要求「提取本轮槽位」，8.3 的例子也是按槽位合并；5 节目录未列此文件 | 5 / 8.3 |
 | R11 | `ToolExecutor.execute(call, defaults=...)` 支持**会话级环境参数** | `get_calendar_events(user_id, ...)` 的 `user_id` 模型不可能知道；显式参数优先、defaults 兜底 | 11.2 / 8.2 |
 | R12 | `estimate_travel_time` 用**启发式实现**（`HeuristicTravelProvider`，距离 ÷ 速度） | 项目没有接实时路况 API；宁可给确定性实现并说明，也不假装有实时数据 | 11.5 |
-| R29 | `estimate_travel_time` 接入**高德真实路径规划**（`AmapTravelProvider`，S16）：地名解析 **POI 搜索优先、地理编码兜底**；结果带 `distance_km` 与 `origin_resolved/destination_resolved`；无 `AMAP_API_KEY` 时**退化为启发式**并用 `source` 标明数据来源 | 引入真实数据源时被两件事纠正：① 首次真实调用报 `INVALID_USER_KEY`，排查发现是**我的请求漏传 `key` 参数**（桩测试只按 URL 匹配，抓不到"参数缺失"，靠真实调用才发现）；② 地理编码把「解放碑」的首条给到四川广元的住宅区、把「江北机场」解析到宁波江北区，算出 1813 km —— **geocode 不是查 POI 的接口**，改 POI 优先后「解放碑步行街 → 重庆江北国际机场」35 分钟/30 km 符合常识 | 11.5 / 11.6 |
+| R29 | `estimate_travel_time` 接入**高德真实路径规划**（`AmapTravelProvider`，S16）：地名解析只用 **POI 搜索**；结果带 `distance_km` 与 `origin_resolved/destination_resolved`；无 `AMAP_API_KEY` 时**退化为启发式**并用 `source` 标明数据来源 | 引入真实数据源时被两件事纠正：① 首次真实调用报 `INVALID_USER_KEY`，排查发现是**我的请求漏传 `key` 参数**（桩测试只按 URL 匹配，抓不到"参数缺失"，靠真实调用才发现）；② 地理编码把「解放碑」的首条给到四川广元的住宅区、把「江北机场」解析到宁波江北区，算出 1813 km —— **geocode 不是查 POI 的接口** | 11.5 / 11.6 |
+| R30 | **地点无法唯一确定时追问用户**：provider 抛 `ambiguous_place`（`ProviderAmbiguousPlace`）→ Plan 引擎转 `need_info`（用 `slot_bindings` 反推该补哪个槽位）并**停止执行后续步骤**；该错误码不可重试；同时**删掉地理编码兜底** | 排除了两条都不行的路：① "用记忆/上下文给城市提示"——实测对著名地标毫无差别，而错误提示会把"明确失败"变成"静默错误"；② "地理编码兜底"——POI 无结果时它必然挑一个"道路/村庄级"的随意城市（「人民路」→ 陕西商洛，722 公里；「火车站」→ 甘肃陇南徽县"火站村"）。**信息不够具体时唯一诚实的动作是问用户**：补一句"重庆人民路"后 POI 路径立刻走通（13 分钟/4.2 公里） | 11.5 / 11.6 / 8.2 |
 | R13 | 依赖失败的步骤**跳过**（`blocked_by_dependency`）而不是让整个 Plan 崩掉 | 一步失败就整体无回答，违背「失败可恢复」原则 | 8.3 |
 | R14 | 预算由**门面**创建并贯穿整轮；熔断时补齐 `tool` 消息；降级成功时清空 `error`；预算耗尽跳过记忆写入 | 分别对应：引擎各自计时会漏算记忆开销 / 缺配对消息会让历史回放被真实 API 拒绝 / 成功的降级会被评测误判为失败 | 8.2 / 14.1 |
 | R15 | 降级文案按「毫秒」如实显示小于 1 秒的预算 | `--budget-ms 1` 曾显示成「已达 1 秒」，与实际严重不符 | 14.1 |
@@ -306,7 +307,7 @@ src/first_agent/
 │   └── repeats_live.json  # ✅ 真 LLM 每轮明细与一致性（--repeat，S10）
 └── main.py                # ✅ CLI（chat / eval / memory / trace）
 
-tests/                     # ✅ 489 个离线测试（无 API Key 可跑）
+tests/                     # ✅ 521 个离线测试（无 API Key 可跑）
 var/                       # ✅ 本地 SQLite 与 Trace（已 gitignore）
 
 .env.example               # ✅ 环境变量示例（不含密钥）
@@ -609,6 +610,10 @@ class Plan(BaseModel):
   （启发式不否决结构合法的计划，避免把一次正确的回答判成失败）。
 - **出行方式（R28）**：`TravelMode` 枚举 + `MODE_ALIASES` 在契约层归一化；
   `MODE_SPEED_KMH` 必须与枚举一致（`test_tool_mode_enum_matches_provider_supported_modes`）。
+- **执行期的追问（R30）**：规划期看不出来、只有问了外部服务才知道的"信息不够具体"
+  （如地点无法唯一确定）也走 `need_info`：Plan 引擎在步骤失败且 `error_code == "ambiguous_place"`
+  时转成追问并停止执行后续步骤（用户补充的那句话可能改变整个计划），回答直接用 provider
+  给出的可操作文案。这条路径与 R26 的规划前置校验互补：一个在计划生成后、一个在执行期。
 
 ### 8.3 多轮追问
 
@@ -838,6 +843,16 @@ class CalendarResult(BaseModel):
 ### 11.6 地点解析
 
 硬编码地点必须删除。
+
+实现补充（R29 / R30）：解析链只有一条——**高德 POI 文本搜索**（`/v3/place/text`）。
+
+- **不用地理编码兜底**：实测 POI 有结果时可靠（连"重庆市渝中区人民路 1 号"这种完整地址
+  也能落进正确城区）；而 POI 无结果时地理编码**必然**挑一个"道路/村庄级"的随意城市
+  （「人民路」→ 陕西商洛算出 722 公里，「火车站」→ 甘肃陇南徽县"火站村"）。
+- **解析不到 → `ambiguous_place` → 追问**（不是报"找不到"）：Plan 引擎据此转 `need_info`
+  并用 `slot_bindings` 指出该补哪个槽位（出发地/目的地），同时**停止执行后续步骤**；
+  ReAct 模式由这段可操作的错误文案驱动模型追问（实测模型还会主动给出候选站点）。
+- 解析结果随结果返回（`origin_resolved` / `destination_resolved`），歧义可核对。
 
 ```text
 当前用户输入
@@ -1427,8 +1442,11 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 | 无法识别的方式给出可选值 | `tests/test_builtin_tools.py::test_travel_tool_rejects_unknown_mode_with_legal_values` | ✅ |
 | 工具枚举与 provider 支持集一致 | `tests/test_builtin_tools.py::test_tool_mode_enum_matches_provider_supported_modes` | ✅ |
 | 高德：每个请求都带 key（回归，曾漏传致 `INVALID_USER_KEY`） | `tests/test_amap_provider.py::test_every_request_carries_the_api_key` | ✅ |
-| 高德：POI 搜索优先于地理编码 | `tests/test_amap_provider.py::test_poi_search_is_used_before_geocoding` | ✅ |
-| 高德：POI 无结果时回退地理编码 | `tests/test_amap_provider.py::test_geocoding_is_the_fallback_when_poi_is_empty` | ✅ |
+| 高德：只用 POI 搜索解析（不碰地理编码） | `tests/test_amap_provider.py::test_place_is_resolved_with_poi_search_only` | ✅ |
+| 地点不确定 → 追问而不是猜 | `tests/test_amap_provider.py::test_poi_miss_asks_for_more_information_instead_of_guessing` | ✅ |
+| POI 命中但无坐标也算未解析 | `tests/test_amap_provider.py::test_poi_without_location_counts_as_unresolved` | ✅ |
+| `ambiguous_place` 不重试（只调一次） | `tests/test_amap_provider.py::test_ambiguous_place_is_not_retried` | ✅ |
+| Plan 引擎把「不确定」转成追问并停住后续步骤 | `tests/test_amap_provider.py::test_plan_engine_turns_ambiguous_place_into_a_follow_up_question` | ✅ |
 | 高德：暴露解析出的规范地名供核对 | `tests/test_amap_provider.py::test_resolved_names_are_returned_for_verification` | ✅ |
 | 高德：步行/骑行超限算 `not_found` 而非故障 | `tests/test_amap_provider.py::test_out_of_range_route_is_not_found_not_unavailable` | ✅ |
 | 高德：v4（骑行）响应用 `errcode` 解析 | `tests/test_amap_provider.py::test_bicycling_uses_v4_envelope` | ✅ |

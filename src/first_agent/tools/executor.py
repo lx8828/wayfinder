@@ -22,9 +22,10 @@ from first_agent.providers.base import ProviderError
 from first_agent.schemas.tool import ToolCall, ToolResult
 from first_agent.tools.registry import ToolRegistry
 
-# 重试也不会成功（或不该重试）的错误码
+# 重试也不会成功（或不该重试）的错误码。
+# ``ambiguous_place``（信息不够具体）要转成追问用户，重试同样参数毫无意义。
 _NON_RETRYABLE = frozenset(
-    {"invalid_arguments", "invalid_output", "unknown_tool", "not_found"}
+    {"invalid_arguments", "invalid_output", "unknown_tool", "not_found", "ambiguous_place"}
 )
 
 # 专门用于「单次调用的超时」的池，与调用级并发池分开，避免嵌套提交死锁

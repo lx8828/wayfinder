@@ -33,6 +33,17 @@ class ProviderNotFound(ProviderError):
     code = "not_found"
 
 
+class ProviderAmbiguousPlace(ProviderNotFound):
+    """**信息不够具体**，无法唯一确定地点（如「人民路」「火车站」）。
+
+    与 ``not_found`` 的区别在于"该怎么办"：这类失败**补充信息就能成功**，
+    所以运行时应当转成 ``need_info`` 追问用户，而不是报"查不到"就结束。
+    继承 ``ProviderNotFound`` 是为了让不区分两者的调用方仍然按"没找到"处理。
+    """
+
+    code = "ambiguous_place"
+
+
 class ProviderUnavailable(ProviderError):
     """外部服务不可用（限流、5xx 等）。"""
 

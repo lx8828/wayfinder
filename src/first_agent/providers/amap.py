@@ -1,8 +1,8 @@
 """高德地图（Amap）真实 provider：地名 → 坐标 → 路径规划耗时（design.md 9.3 的真实实现）。
 
 为什么要三步：高德的路径规划接口吃的是**经纬度**，而工具契约给的是**地名**
-（"解放碑" / "重庆"）。所以先把地名解析成坐标（**POI 搜索优先，地理编码兜底**，见
-``_resolve`` 的实测对照表），再按出行方式选端点：
+（"解放碑" / "重庆"）。所以先用 **POI 文本搜索**把地名解析成坐标（见 ``_resolve`` 的实测
+对照表：**不用地理编码兜底**，它会把"信息不够具体"变成自信的错误答案），再按出行方式选端点：
 
 | mode | 端点 | 说明 |
 |---|---|---|
@@ -27,6 +27,7 @@ from typing import Any
 import httpx
 
 from first_agent.providers.base import (
+    ProviderAmbiguousPlace,
     ProviderNotFound,
     ProviderTimeout,
     ProviderUnavailable,
@@ -182,15 +183,20 @@ class AmapTravelProvider:
     def _resolve(self, place: str) -> tuple[str, str, str]:
         """地名 → ``(坐标 "lon,lat", adcode, 规范名)``；结果缓存（同一进程内）。
 
-        **先用 POI 文本搜索，再退回地理编码**——这不是保险起见，而是实测差异：
+        **只用 POI 文本搜索，不退回地理编码**——这是实测数据决定的：
 
-        | 输入 | ``geocode/geo`` 的首条 | ``place/text`` 的首条 |
+        | 输入 | POI 搜索 | 地理编码（已弃用） |
         |---|---|---|
-        | 解放碑 | 四川省广元市旺苍县解放碑（住宅区）✗ | 解放碑步行街（重庆渝中）✓ |
-        | 江北机场 | 浙江省宁波市江北区 ✗ | 重庆江北国际机场 ✓ |
+        | 解放碑 | 解放碑步行街（重庆渝中）✓ | 首条是四川省广元市的住宅区 ✗ |
+        | 江北机场 | 重庆江北国际机场 ✓ | 解析到浙江省宁波市江北区 ✗ |
+        | 重庆市渝中区人民路 1 号 | 渝中区某营业部 ✓ | 可用 |
+        | **人民路** | **无结果** | 陕西省商洛市的某条道路 ✗ |
+        | **火车站** | **无结果** | 甘肃省陇南市徽县「火站村」 ✗ |
 
-        地理编码偏向"地址"，POI 搜索偏向"地标"，而助手收到的多是人嘴里的地标/机场/商圈。
-        纯地址（"XX路 123 号"）POI 搜不到时，由 geocode 兜底。
+        结论：POI 有结果时可靠（连完整地址也能落进正确城区）；而 **POI 无结果时，地理编码
+        一定会挑一个"道路/村庄级"的随意城市**，把"信息不够具体"变成**自信的错误答案**
+        （实测「人民路」被算成 722 公里）。所以这种情况抛 ``ProviderAmbiguousPlace``，
+        由运行时**追问用户补充城市**；用户补一句"重庆人民路"就能走通 POI 路径。
         """
 
         key = place.strip()
@@ -199,27 +205,16 @@ class AmapTravelProvider:
             return cached
 
         poi = _first(self._get("/v3/place/text", {"keywords": key, "offset": "3"}).get("pois"))
-        if poi is not None and str(poi.get("location") or "").strip():
-            resolved = (
-                str(poi["location"]).strip(),
-                str(poi.get("adcode") or poi.get("cityname") or "").strip(),
-                str(poi.get("name") or key).strip(),
+        if poi is None or not str(poi.get("location") or "").strip():
+            raise ProviderAmbiguousPlace(
+                f"无法确定『{place}』的位置：请补充所在城市或更完整的名称"
+                "（例如「重庆人民路」）"
             )
-            self._resolve_cache[key] = resolved
-            return resolved
 
-        first = _first(self._get("/v3/geocode/geo", {"address": key}).get("geocodes"))
-        if first is None:
-            raise ProviderNotFound(f"高德找不到这个地点：{place}")
-
-        location = str(first.get("location") or "").strip()
-        if not location:
-            raise ProviderNotFound(f"高德没有返回 {place} 的坐标")
-        # 公交路径规划需要城市，adcode 比城市名更可靠
         resolved = (
-            location,
-            str(first.get("adcode") or first.get("city") or "").strip(),
-            str(first.get("formatted_address") or key).strip(),
+            str(poi["location"]).strip(),
+            str(poi.get("adcode") or poi.get("cityname") or "").strip(),
+            str(poi.get("name") or key).strip(),
         )
         self._resolve_cache[key] = resolved
         return resolved

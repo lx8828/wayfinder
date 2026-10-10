@@ -240,6 +240,27 @@ def detect_coverage_gap(user_input: str, plan: Plan) -> PlanProblem | None:
     )
 
 
+def _ambiguous_slot(
+    step: PlanStep, arguments: Mapping[str, Any], message: str, registry: ToolRegistry
+) -> str | None:
+    """从失败的步骤里找出「需要用户补充」的槽位（R30）。
+
+    provider 只知道自己解析不了的**地名**，不知道它来自哪个参数；用「值出现在错误信息里」
+    把两者对上（错误信息里必然带着那个地名）。匹配不到时退回该步骤的第一个地点类绑定。
+    """
+
+    spec = registry.get(step.tool)
+    bindings = dict(getattr(spec, "slot_bindings", {}) or {}) if spec is not None else {}
+    for field_name, slot in bindings.items():
+        value = arguments.get(field_name)
+        if value is not None and str(value) in message:
+            return slot
+    for _, slot in bindings.items():
+        if slot in _PLACE_SLOTS:
+            return slot
+    return None
+
+
 def _detect_cycles(plan: Plan) -> list[PlanProblem]:
     graph = {
         step.id: [item for item in step.depends_on if item != step.id] for step in plan.steps
@@ -671,6 +692,19 @@ class PlanExecuteEngine:
                 latency_ms=tool_result.latency_ms,
             )
 
+            if tool_result.error_code == "ambiguous_place":
+                # 地名无法唯一确定（如「人民路」「火车站」）：**补一句城市就能成功**，
+                # 所以转成追问用户，而不是报"查不到"了事，也不继续执行后续步骤
+                # （用户补充的那句话可能改变整个计划）。
+                return self._answer_ambiguous_place(
+                    result,
+                    state,
+                    step,
+                    arguments,
+                    tool_result.error_message or "",
+                    started,
+                )
+
         # 6) 汇总回答（汇总也要花一次 LLM 调用，同样受预算约束）
         items = _observations(result.step_traces, result.tool_results)
         exceeded = check_budget(budget, "summary")
@@ -786,6 +820,37 @@ class PlanExecuteEngine:
             # 启发式不该否决一个结构合法的计划：记录后照常执行
             self._trace("plan_coverage_gap_accepted", steps=len(replanned.steps))
         return replanned, []
+
+    def _answer_ambiguous_place(
+        self,
+        result: PlanResult,
+        state: WorkingState,
+        step: PlanStep,
+        arguments: Mapping[str, Any],
+        message: str,
+        started: float,
+    ) -> PlanResult:
+        """执行期发现「地点无法唯一确定」→ 追问用户补充限定信息（R30）。
+
+        与 ``_answer_need_info`` 只差**发现时机**：那个在规划期就能看出来，这个要真的问了
+        外部服务才知道。回答直接用 provider 给出的可操作文案（"请补充所在城市或更完整的
+        名称（例如「重庆人民路」）"），因为它已经是一句合格的追问。
+        """
+
+        slot = _ambiguous_slot(step, arguments, message, self.registry)
+        slots = [slot] if slot else []
+        state.pending_slots = slots
+        result.status = "need_info"
+        result.need_info = slots
+        result.answer = message or f"我还需要知道{slot_labels(slots)}才能查询。"
+        self._trace(
+            "plan_need_clarification",
+            step=step.id,
+            tool=step.tool,
+            slot=slot,
+            message=message,
+        )
+        return self._finish(result, started)
 
     def _answer_need_info(
         self,

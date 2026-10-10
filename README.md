@@ -80,7 +80,7 @@ step 2  get_calendar_events {"user_id": "2744ccd10c7533bd", "date": "$steps.0.da
 
 ```bash
 uv sync
-uv run pytest                # 489 个离线测试，不需要任何 API Key
+uv run pytest                # 521 个离线测试，不需要任何 API Key
 uv run first-agent eval      # 36 条用例 + 离线回归门禁，同样不需要 Key
 ```
 
@@ -321,10 +321,14 @@ tool schema version / case set hash**，可以回答"这次指标变化对应哪
   启发式估算（距离 ÷ 速度，默认距离 12km，`source: heuristic`）。**估算值不可信**——
   实测"重庆→成都"会算成 16 分钟，模型自己察觉并拒绝了它。这不该算设计优点：
   静态实现就该把数据来源标出来，让调用方判断。
-- **高德地名解析有歧义，所以做了两层解析**：地理编码把「解放碑」的首条给到四川广元的住宅区、
-  把「江北机场」解析到宁波江北区；因此实现改为 **POI 搜索优先、地理编码兜底**
-  （实测「解放碑步行街」「重庆江北国际机场」都能正确对上），并把解析结果放进
-  `origin_resolved` / `destination_resolved` 供核对。提问时带上城市（"重庆 解放碑"）更稳。
+- **地名不确定时追问，而不是猜**：解析只用高德 **POI 文本搜索**——实测地理编码会把「解放碑」的
+  首条给到四川广元的住宅区、把「江北机场」解析到宁波江北区；而 POI 无结果时它**必然**挑一个
+  "道路/村庄级"的随意城市（「人民路」→ 陕西商洛，算出 722 公里；「火车站」→ 甘肃陇南徽县
+  "火站村"），把"信息不够具体"变成**自信的错误答案**。所以 POI 无结果 → `ambiguous_place` →
+  **追问用户补充城市**：plan 模式由引擎转成 `need_info`（并指出该补出发地还是目的地），
+  react 模式由可操作的错误信息驱动模型追问。实测"从人民路到观音桥开车要多久"会回答
+  "无法确定『人民路』的位置：请补充所在城市或更完整的名称（例如「重庆人民路」）"，
+  补一句后即得 13 分钟 / 4.2 公里。结果里带 `origin_resolved` / `destination_resolved` 供核对。
 - **步行/骑行有距离上限**：高德返回 `OVER_DIRECTION_RANGE` 时映射为 `not_found`（不重试），
   与真正的服务故障（`unavailable`，可重试）区分开。
 - **LLM-as-Judge 的局限**：与作答复用同一客户端（仅 prompt 独立），判定偏宽松；
@@ -348,7 +352,7 @@ tool schema version / case set hash**，可以回答"这次指标变化对应哪
 ## 质量保证
 
 ```bash
-uv run pytest -q                  # 489 个测试，全部离线（ScriptedLLM + Fake provider）
+uv run pytest -q                  # 521 个测试，全部离线（ScriptedLLM + Fake provider）
 uv run first-agent eval --quiet   # 离线评测门禁，无需 API Key
 ```
 
@@ -372,7 +376,7 @@ src/first_agent/
 ├── memory/      # extractor / adjudicator / service / summarizer / store / migrate（表结构迁移）
 ├── evals/       # cases.jsonl、judge_cases.jsonl、offline/live/suite/judge.py、baseline*/current*/diff*/
 └── main.py      # CLI：chat / eval / memory / trace
-tests/           # 489 个离线测试
+tests/           # 521 个离线测试
 docs/design.md   # 设计文档：契约、决策记录、里程碑与实测结论
 ```
 
@@ -417,7 +421,7 @@ docs/design.md   # 设计文档：契约、决策记录、里程碑与实测结�
 - 建立**两段式评测**（离线夹具硬门禁 + 真 LLM 波动指标）与方向化容差判定，
   并用变异测试证明门禁真能挡住回归；真 LLM 段 `--repeat 3` 量化出模型能力**及其波动**，
   并对开放式用例接入 LLM-as-Judge（15 条样本，单条权重 6.7pt）。
-- 489 个测试全部离线可跑（注入 ScriptedLLM 与 Fake provider），覆盖失败、超时、
+- 521 个测试全部离线可跑（注入 ScriptedLLM 与 Fake provider），覆盖失败、超时、
   依赖阻塞、预算熔断与降级路径。
 
 ---

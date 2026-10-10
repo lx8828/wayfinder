@@ -7,6 +7,7 @@
 from first_agent.providers.base import (
     CalendarProvider,
     DateTimeProvider,
+    ProviderAmbiguousPlace,
     ProviderError,
     ProviderNotFound,
     ProviderTimeout,
@@ -37,6 +38,7 @@ __all__ = [
     "ProviderTimeout",
     "ProviderNotFound",
     "ProviderUnavailable",
+    "ProviderAmbiguousPlace",
     # 真实实现
     "QWeatherProvider",
     "LlmDateTimeProvider",
