@@ -301,7 +301,7 @@ src/first_agent/
 │   └── repeats_live.json  # ✅ 真 LLM 每轮明细与一致性（--repeat，S10）
 └── main.py                # ✅ CLI（chat / eval / memory / trace）
 
-tests/                     # ✅ 485 个离线测试（无 API Key 可跑）
+tests/                     # ✅ 489 个离线测试（无 API Key 可跑）
 var/                       # ✅ 本地 SQLite 与 Trace（已 gitignore）
 
 .env.example               # ✅ 环境变量示例（不含密钥）
@@ -1704,7 +1704,7 @@ LLM-as-Judge（`--judge`）、元数据落盘（commit / model / prompt / tool s
    - `Plan Success Rate` 摆动 ±14.29，**读均值必须连摆动一起读**。
 
 8. **（S15 judge 扩样）粒度修好了，摆动没有**：样本 5 → 15 条，单条用例权重
-   20pt → 6.7pt；但 3 轮实测里仍有 **5/15 条轮间翻转**（记忆族占多数），
+20pt → 6.7pt；但 3 轮实测里仍有 **5/15 条轮间翻转**（其中 2 条与记忆取值直接相关），
    所以 `Task Success Rate` 的轮间摆动**仍是 20pt**——差别在于现在能逐条点名、
    且需要 3 条用例共同造成。结论：**扩样解决的是"单条用例被放大成结论"，不是模型抖动本身**；
    均值必须连摆动一起读（CLI 摘要会把两者都打出来）。
