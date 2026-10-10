@@ -9,18 +9,18 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from first_agent.core.client import LLMClient
-from first_agent.core.db import Database
-from first_agent.core.engine import ToolAgentRuntime
-from first_agent.core.session import SessionRef, SessionResolver, SessionStore
-from first_agent.evals.scripted import ScriptedLLM, json_obj, json_raw, text
-from first_agent.memory.store import MemoryStore
-from first_agent.memory.summarizer import SessionSummarizer
-from first_agent.providers import FakeWeatherProvider
-from first_agent.runtime import ReactEngine
-from first_agent.schemas.session import SessionSummary
-from first_agent.tools.builtin import make_time_tool, make_weather_tool
-from first_agent.tools.registry import ToolRegistry
+from wayfinder.core.client import LLMClient
+from wayfinder.core.db import Database
+from wayfinder.core.engine import ToolAgentRuntime
+from wayfinder.core.session import SessionRef, SessionResolver, SessionStore
+from wayfinder.evals.scripted import ScriptedLLM, json_obj, json_raw, text
+from wayfinder.memory.store import MemoryStore
+from wayfinder.memory.summarizer import SessionSummarizer
+from wayfinder.providers import FakeWeatherProvider
+from wayfinder.runtime import ReactEngine
+from wayfinder.schemas.session import SessionSummary
+from wayfinder.tools.builtin import make_time_tool, make_weather_tool
+from wayfinder.tools.registry import ToolRegistry
 
 FIXED_CLOCK = lambda: datetime(2026, 10, 10, 8, 30, tzinfo=timezone.utc)  # noqa: E731
 

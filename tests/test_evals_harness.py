@@ -13,9 +13,9 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-import first_agent.evals as evals_pkg
-from first_agent.core.client import LLMClient
-from first_agent.evals import (
+import wayfinder.evals as evals_pkg
+from wayfinder.core.client import LLMClient
+from wayfinder.evals import (
     EvalCase,
     RunOutcome,
     ScriptedLLM,
@@ -30,16 +30,16 @@ from first_agent.evals import (
     text,
     tool,
 )
-from first_agent.evals.case import (
+from wayfinder.evals.case import (
     arguments_match,
     memory_delta_matches,
     sequence_matches,
     set_matches,
 )
-from first_agent.evals.offline import offline_engine_factory
-from first_agent.providers import FakeWeatherProvider
-from first_agent.schemas.tool import ToolSpec
-from first_agent.tools.registry import ToolRegistry
+from wayfinder.evals.offline import offline_engine_factory
+from wayfinder.providers import FakeWeatherProvider
+from wayfinder.schemas.tool import ToolSpec
+from wayfinder.tools.registry import ToolRegistry
 
 CASES_PATH = Path(evals_pkg.__file__).parent / "cases.jsonl"
 

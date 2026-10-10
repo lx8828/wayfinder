@@ -16,25 +16,25 @@ import json
 
 import pytest
 
-from first_agent.core.client import LLMClient
-from first_agent.evals.adapters import to_run_outcome
-from first_agent.evals.case import (
+from wayfinder.core.client import LLMClient
+from wayfinder.evals.adapters import to_run_outcome
+from wayfinder.evals.case import (
     EvalCase,
     load_cases,
     precedence_matches,
     required_tools,
     tool_recall_ok,
 )
-from first_agent.evals.metrics import compute_metrics
-from first_agent.evals.runner import (
+from wayfinder.evals.metrics import compute_metrics
+from wayfinder.evals.runner import (
     CaseCheck,
     RunOutcome,
     plan_success_ok,
     plan_validity_ok,
     run_case,
 )
-from first_agent.evals.scripted import ScriptedLLM, json_obj, text, tool
-from first_agent.runtime import PlanExecuteEngine, ReactEngine
+from wayfinder.evals.scripted import ScriptedLLM, json_obj, text, tool
+from wayfinder.runtime import PlanExecuteEngine, ReactEngine
 from tests.plan_helpers import build_engine, make_registry, user_messages
 
 # -- 辅助 ------------------------------------------------------------------

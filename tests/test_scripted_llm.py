@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from first_agent.core.client import LLMClient, LLMError
-from first_agent.evals.scripted import (
+from wayfinder.core.client import LLMClient, LLMError
+from wayfinder.evals.scripted import (
     ScriptedLLM,
     ToolCallSpec,
     fail,

@@ -1,0 +1,27 @@
+{
+  "metadata": {
+    "case_count": 36,
+    "case_set_hash": "d70b65d8e944",
+    "generated_at": "2026-10-10T15:57:29+00:00",
+    "git_commit": "08e5c59",
+    "mode": "offline",
+    "model": "scripted+fake",
+    "prompt_version": "5d942838aae5",
+    "tool_schema_version": "fbc457087ac9"
+  },
+  "metrics": {
+    "Argument Accuracy": 100.0,
+    "Assertion Pass Rate": 100.0,
+    "Average Latency": 0.8,
+    "Average Steps": 1.72,
+    "Extra Tool Call Rate": 0.0,
+    "Memory Decision Accuracy": 100.0,
+    "Plan Success Rate": 100.0,
+    "Plan Validity Rate": 100.0,
+    "Precedence Accuracy": 100.0,
+    "Structured Output Validity Rate": 100.0,
+    "Tool Selection Accuracy": 100.0,
+    "Tool Sequence Accuracy": 100.0,
+    "Tool Set Accuracy": 100.0
+  }
+}

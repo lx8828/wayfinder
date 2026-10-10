@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-import first_agent.evals as evals_pkg
-from first_agent.evals import judge as judge_mod
-from first_agent.evals import offline, suite
-from first_agent.evals.case import EvalCase, OfflineFixture, load_cases
-from first_agent.evals.metrics import MetricDelta, compare_metrics
-from first_agent.evals.runner import RunOutcome, run_case, run_cases_isolated
+import wayfinder.evals as evals_pkg
+from wayfinder.evals import judge as judge_mod
+from wayfinder.evals import offline, suite
+from wayfinder.evals.case import EvalCase, OfflineFixture, load_cases
+from wayfinder.evals.metrics import MetricDelta, compare_metrics
+from wayfinder.evals.runner import RunOutcome, run_case, run_cases_isolated
 
 CASES_PATH = Path(evals_pkg.__file__).parent / "cases.jsonl"
 
@@ -172,7 +172,7 @@ def test_offline_react_script_is_derived_from_expectations():
 def test_each_case_gets_its_own_database():
     """database 隔离（design.md 16.4）：两个运行时之间不共享任何记忆。"""
 
-    from first_agent.schemas.memory import MemoryCandidate
+    from wayfinder.schemas.memory import MemoryCandidate
 
     case = _case("memory_add_028")
     first = offline.build_runtime(case)

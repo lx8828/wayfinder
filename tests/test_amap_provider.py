@@ -15,8 +15,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from first_agent.providers import AmapTravelProvider
-from first_agent.providers.base import (
+from wayfinder.providers import AmapTravelProvider
+from wayfinder.providers.base import (
     ProviderAmbiguousPlace,
     ProviderNotFound,
     ProviderTimeout,
@@ -398,10 +398,10 @@ def test_v3_requests_ask_for_json_output():
 def test_tool_integration_carries_real_fields_through_the_contract():
     """工具层契约：距离 / 解析名 / source 要能通过 output_model 校验并进 ToolResult。"""
 
-    from first_agent.schemas.tool import ToolCall
-    from first_agent.tools.builtin import make_travel_time_tool
-    from first_agent.tools.executor import ToolExecutor
-    from first_agent.tools.registry import ToolRegistry
+    from wayfinder.schemas.tool import ToolCall
+    from wayfinder.tools.builtin import make_travel_time_tool
+    from wayfinder.tools.executor import ToolExecutor
+    from wayfinder.tools.registry import ToolRegistry
 
     provider, _ = build()
     registry = ToolRegistry()
@@ -435,8 +435,8 @@ EMPTY_RESOLUTION = {
 def _registry_with(provider):
     """只注册本用例用到的工具（计划里出现的每个工具都必须在注册表里，否则会算 unknown_tool）。"""
 
-    from first_agent.tools.builtin import make_time_tool, make_travel_time_tool
-    from first_agent.tools.registry import ToolRegistry
+    from wayfinder.tools.builtin import make_time_tool, make_travel_time_tool
+    from wayfinder.tools.registry import ToolRegistry
 
     registry = ToolRegistry()
     registry.register(make_travel_time_tool(provider))
@@ -447,8 +447,8 @@ def _registry_with(provider):
 def test_ambiguous_place_is_not_retried():
     """补一句城市就能成功的事，重试同样的参数毫无意义（只调一次）。"""
 
-    from first_agent.schemas.tool import ToolCall
-    from first_agent.tools.executor import ToolExecutor
+    from wayfinder.schemas.tool import ToolCall
+    from wayfinder.tools.executor import ToolExecutor
 
     provider, _ = build(dict(EMPTY_RESOLUTION))
     executor = ToolExecutor(_registry_with(provider))
@@ -469,7 +469,7 @@ def test_ambiguous_place_is_not_retried():
 def test_plan_engine_turns_ambiguous_place_into_a_follow_up_question():
     """Plan 引擎要把「信息不够具体」转成**追问用户**，而不是报"查不到"或继续跑。"""
 
-    from first_agent.evals.scripted import json_obj
+    from wayfinder.evals.scripted import json_obj
     from tests.plan_helpers import build_engine, user_messages
 
     provider, _ = build(dict(EMPTY_RESOLUTION))

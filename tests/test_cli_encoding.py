@@ -1,6 +1,6 @@
 """CLI 输出编码：重定向到非 UTF-8 编码时不能崩（Windows 实测缺陷）。
 
-复现方式：Windows 下 ``first-agent eval > out.txt`` 或 ``| Select-String`` 时，
+复现方式：Windows 下 ``wayfinder eval > out.txt`` 或 ``| Select-String`` 时，
 Python 的 stdout 会退化为 ANSI 代码页（简中为 ``gbk``），打印 ``✅``/``✗`` 直接
 ``UnicodeEncodeError``，命令以 exit 1 结束、输出全空。
 
@@ -16,7 +16,7 @@ import sys
 
 import pytest
 
-from first_agent.main import _configure_stdio
+from wayfinder.main import _configure_stdio
 
 SYMBOLS = "门禁通过 ✅ ✗⚠✓"
 
@@ -43,7 +43,7 @@ def test_non_utf8_stdout_would_crash_without_the_fix():
 
 def test_configure_stdio_survives_non_utf8_stdout():
     completed = _run(
-        f"from first_agent.main import _configure_stdio; _configure_stdio(); print({SYMBOLS!r})",
+        f"from wayfinder.main import _configure_stdio; _configure_stdio(); print({SYMBOLS!r})",
         encoding="gbk",
     )
 

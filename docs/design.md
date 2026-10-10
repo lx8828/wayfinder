@@ -1,7 +1,7 @@
 # 天气出行助手 / Tool Agent Runtime 设计文档
 
 - 项目：一个**天气出行助手**（天气 / 日程 / 两地耗时 / 时间问答），其 Agent 运行时从零手写
-- 仓库：`first-agent`（本文档位于 `docs/design.md`，随代码一同版本化）
+- 仓库：`wayfinder`（本文档位于 `docs/design.md`，随代码一同版本化）
 - 版本：v0.4
 - 日期：2026-10-10
 - 状态：Proposed（S0–S16 已实现，见 0.1）
@@ -79,7 +79,7 @@
 | R16 | 运行时在**两种模式**下都注入 `user_id` 环境参数 | 此前只有 Plan 注入，导致 `get_calendar_events` 在 ReAct 模式**永远无法成功**（模型不可能知道 user_id） | 8.2 / 11.4 |
 | R17 | 用例级新增「工具必须真的成功」判定（`tool_ok`） | 工具全挂但工具集合/参数恰好正确时，指标会假装一切正常（S7 首次运行就踩到：`invalid_output` 被 100% 的指标掩盖） | 16.2 |
 | R18 | LLM-as-Judge 必须同时看到**工具观测数据** | 不给观测，裁判会把回答里的真实数值误判为「编造事实」（首次真实运行实测） | 16.3 |
-| R19 | `TRACE_MODE` / `FIRST_AGENT_TRACE_DIR` 真正接入 CLI；新增 `core/inspect.py` 承载 `memory` / `trace` 的数据层 | 前两个环境变量文档写了但代码从未读取（文档与实现不符）；运维视图放在 CLI 里无法单测 | 15 / 5 |
+| R19 | `TRACE_MODE` / `WAYFINDER_TRACE_DIR` 真正接入 CLI；新增 `core/inspect.py` 承载 `memory` / `trace` 的数据层 | 前两个环境变量文档写了但代码从未读取（文档与实现不符）；运维视图放在 CLI 里无法单测 | 15 / 5 |
 | R21 | 新增 `--repeat N` 并落地 `Run-to-run Consistency`（结论 + 工具序列两个口径）；硬失败按「任意一轮失败」去重 | 设计 14.4 要求「真 LLM 跑 3 次观察稳定性」，但此前只能靠人工看日志；单轮数字无法区分「模型不稳」和「测试不稳」 | 14.4 / 16.5 |
 | R26 | **规划前置校验**：工具输入字段声明 `slot_bindings`；步骤里出现"不在已知信息中的地点"或"我家/公司"这类相对说法 → 转 `need_info` 追问，**不执行任何工具**；既无步骤又无 `need_info` 的空计划计为结构缺陷 | 真跑中规划器会给缺失的槽位编一个值硬跑（不知道城市就填"北京"、拿"我家"当出发地），工具照样返回"正常"结果——**用户拿到的是编造的答案**。追问是唯一诚实的处理 | 8.2 |
 | R27 | 复合意图：Planner Prompt 要求「和/并且/同时/顺便/、」分隔的每个需求都映射到至少一个工具步骤；另有**覆盖度启发式**只触发一次修复性重规划，重规划后仍不达标也照常执行 | `need_info` 的字段名是**结构化契约**，Prompt 必须给出规范词表（否则模型自造 `city`，`pending_slots` 与断言都对不上）；而覆盖度只是字数启发式，**不能用它否决一个结构合法的计划** | 8.2 |
@@ -87,7 +87,7 @@
 | R24 | 断言按**证据层**分层（`observation` / `need_info` / `tool_error` / `final_answer`），并新增 `any_of` 与 `regex`；失败报告必须指明**是哪一条**断言失败 | 原实现把事实断言全写在回答文本上（要求中文回答出现英文槽位名、要求固定文案），业务正确但换说法的回答被判失败——**度量的是措辞而不是能力**。分层后同一事实按"工具返回的数据"判定，措辞交给 judge | 16.2 / 16.3 |
 | R25 | 工具契约收紧：`estimate_travel_time.mode` 改枚举、`CalendarInput.date` 加 ISO 格式 `pattern` | 描述里写"walk/bike/…"等于没要求：真跑中模型传 `driving` → provider 抛 `not_found`（像"查不到路线"，实为契约违例）；日历收到非 ISO 日期 → 返回空列表 → 回答"你没有安排"，是**静默的错误答案**。收紧后变成显式 `invalid_arguments`，且 schema 会带上 `enum` / `pattern` 供模型遵循 | 11.5 / 16.2 |
 | R23 | 顺序类指标拆成四个互补维度：`Tool Set Accuracy`（召回）/ `Precedence Accuracy`（关键先后）/ `Plan Validity Rate`（计划合法性四要素）/ `Plan Success Rate`（端到端）；用例新增 `precedence` 字段 | 只用「序列完全相等」无法归因：**合法换序**与**语义顺序错误**被记成同一类失败。真 LLM 实测证明这不是理论问题：`Tool Set` 91.67 而 `Tool Sequence` 66.67，约 25pt 的"序列错误"其实是合法换序 | 16.2 / 16.6 |
-| R22 | CLI 启动时 `_configure_stdio()`：非交互输出切 UTF-8，交互控制台只放宽 `errors` | Windows 下 `first-agent eval > out.txt` / `\| Select-String` 会让 stdout 退化为 `gbk`，打印 `✅/✗/⚠` 直接 `UnicodeEncodeError`（exit 1、输出全空）；交互式控制台走 Windows 控制台 API 反而不受影响，所以只有重定向才暴露 | 15 / 19 |
+| R22 | CLI 启动时 `_configure_stdio()`：非交互输出切 UTF-8，交互控制台只放宽 `errors` | Windows 下 `wayfinder eval > out.txt` / `\| Select-String` 会让 stdout 退化为 `gbk`，打印 `✅/✗/⚠` 直接 `UnicodeEncodeError`（exit 1、输出全空）；交互式控制台走 Windows 控制台 API 反而不受影响，所以只有重定向才暴露 | 15 / 19 |
 | R20 | 补齐**摘要生成**（`memory/summarizer.py`）并明确原文窗口策略 | 10.1/10.3 的摘要一直是「契约 + 表 + 读取路径就绪、写入未接线」，实际行为是"只留最近 8 轮、旧的静默丢弃"，与 README「三层记忆」的表述不符（由用户发现）；同时修掉引擎窗口与构建器窗口**双重裁剪**（引擎取 16 轮、构建器又砍回 8 轮） | 10.1 / 10.3 |
 
 **实测发现（真实冒烟，S3–S4）**：DeepSeek 在带 `tool_calls` 的响应里**有时输出 `content`（Thought）、有时不输出**——同一模型对同类问题先后返回 `content=null` 与 `content="I'll check the current weather in Beijing for you."`。这确认了方案 A（Thought 可选）是唯一稳妥的选择。另注意 **Thought 语言不受输入语言约束**（中文输入得到英文 Thought），如需统一只能在 prompt 中显式要求。
@@ -147,7 +147,7 @@ archive/handwritten_v1/
 ├── README.md
 ├── pyproject.toml
 ├── src/
-│   └── first_agent/
+│   └── wayfinder/
 │       ├── agent.py
 │       ├── planner.py
 │       ├── executor.py
@@ -164,7 +164,7 @@ uv sync          # 在该目录创建/使用独立 .venv
 uv run python web.py
 ```
 
-隔离要求：archive 的包名与主线同为 `first_agent`，**不得与主线安装进同一个 venv**（否则同名包互相覆盖）。若确需共用一个环境，必须把归档包改名为 `first_agent_v1` 并同步修改其内部 import。归档时同时排除 `.env`，避免密钥进入版本库。
+隔离要求：archive 的包名与主线同为 `wayfinder`，**不得与主线安装进同一个 venv**（否则同名包互相覆盖）。若确需共用一个环境，必须把归档包改名为 `wayfinder_v1` 并同步修改其内部 import。归档时同时排除 `.env`，避免密钥进入版本库。
 
 ---
 
@@ -248,7 +248,7 @@ TraceLogger
 ## 5. 目录结构与职责
 
 ```text
-src/first_agent/
+src/wayfinder/
 ├── core/
 │   ├── client.py          # ✅ LLM 客户端与 chat_json 状态机
 │   ├── budget.py          # ✅ 耗时预算与超预算降级（S6b）
@@ -373,7 +373,7 @@ runtime.react → core.client → core.__init__ → core.engine → runtime.reac
 门面必须显式导入：
 
 ```python
-from first_agent.core.engine import ToolAgentRuntime
+from wayfinder.core.engine import ToolAgentRuntime
 ```
 
 回归护栏：`tests/test_import_order.py` 用独立解释器枚举多种导入顺序，防止该环再次出现。
@@ -1099,7 +1099,7 @@ var/traces/YYYY-MM-DD.jsonl
 
 实现补充（S8）：
 
-- `TRACE_MODE` 与 `FIRST_AGENT_TRACE_DIR` 已真正接入 CLI（R19，此前文档写了但代码未读取）。
+- `TRACE_MODE` 与 `WAYFINDER_TRACE_DIR` 已真正接入 CLI（R19，此前文档写了但代码未读取）。
 - **已知缺口**：`final_answer` 等自由文本只做手机号/邮箱掩码，用户自报的姓名可能原样落盘。
   因此 `var/traces/` 不进版本库、不外发。要彻底避免只能不落答案文本，
   但那会让 Trace 失去排障价值——这是**有意的取舍**，写进 README 的隐私说明。
@@ -1290,8 +1290,8 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 
 实现补充（S7）：
 
-- **两段式命令**：`first-agent eval`（离线：ScriptedLLM + Fake Tools，硬门禁）、
-  `first-agent eval --real`（真模型 + **同样的 Fake 世界**，只告警）。真 LLM 段只换模型、
+- **两段式命令**：`wayfinder eval`（离线：ScriptedLLM + Fake Tools，硬门禁）、
+  `wayfinder eval --real`（真模型 + **同样的 Fake 世界**，只告警）。真 LLM 段只换模型、
   不换外部世界——若连天气 API 一起换，就无法判断指标变化来自模型还是来自外部服务。
 - **离线段的定位必须说清**：夹具显式声明「称职模型会怎么回答」，因此 100% 是期望值，
   它的价值在**回归检测**（已实测：破坏 `$steps` 解析 → `Argument Accuracy` 恶化 → 门禁失败；
@@ -1462,15 +1462,15 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 
 ### 18.1 入口迁移 ✅
 
-原 `pyproject.toml` 的 `first-agent` 指向的是占位函数（`first_agent:main`，只打印一行问候），
+原 `pyproject.toml` 的 `wayfinder` 指向的是占位函数（`wayfinder:main`，只打印一行问候），
 这是 v1 的已知缺陷。迁移**已完成**：
 
-1. ✅ v2 CLI 可运行（`first_agent.main:main`，已支持 `chat --mode react`）。
+1. ✅ v2 CLI 可运行（`wayfinder.main:main`，已支持 `chat --mode react`）。
 2. ✅ 更新 `pyproject.toml`：
 
 ```toml
 [project.scripts]
-first-agent = "first_agent.main:main"
+wayfinder = "wayfinder.main:main"
 ```
 
 3. ✅ v1 在 `archive/handwritten_v1/` 中使用自己的 `pyproject.toml` 与独立 `.venv`。
@@ -1522,7 +1522,7 @@ v2.0 不支持多值（如“饮食偏好=不吃辣，爱甜食”这类复合�
 - `travel-agent-langgraph/`
 - `travel-agent-rag/`
 
-v2 只建立在 `first-agent/`。
+v2 只建立在 `wayfinder/`。
 
 ---
 
@@ -1568,7 +1568,7 @@ v2 只建立在 `first-agent/`。
 
 - 打 tag `v1-handwritten`。
 - 复制 v1 快照到 `archive/handwritten_v1/`。
-- 归档**使用独立 venv**（保留原包名 `first_agent`，靠 `.venv` 隔离），避免与主线同名冲突。
+- 归档**使用独立 venv**（保留原包名 `wayfinder`，靠 `.venv` 隔离），避免与主线同名冲突。
 - archive 内 `.gitignore` 排除 `.env`，复制时不带入任何 API Key。
 - 确认 v1 独立可运行（已实测 `uv sync` + 模块导入 + `init_db()`）。
 - 记录 v2 入口迁移计划。
@@ -1585,7 +1585,7 @@ v2 只建立在 `first-agent/`。
 退出条件：
 
 ```bash
-uv run first-agent chat --mode react --user demo --session s1 "北京今天天气"
+uv run wayfinder chat --mode react --user demo --session s1 "北京今天天气"
 ```
 
 **已满足**（真实 API 冒烟通过）。唯一未做项是 README 骨架，顺延到 Phase 5。
@@ -1637,7 +1637,7 @@ uv run first-agent chat --mode react --user demo --session s1 "北京今天天�
 **已满足**：`cases.jsonl` 36 条（分布由测试钉死）、`judge_cases.jsonl` 5 条、
 离线硬门禁（`baseline.json` + 方向化容差判定 + 用例级 `tool_ok`）、真 LLM 段（`--real`）、
 LLM-as-Judge（`--judge`）、元数据落盘（commit / model / prompt / tool schema / case set hash）、
-`first-agent eval` 一键跑完（无 API Key）。
+`wayfinder eval` 一键跑完（无 API Key）。
 
 **门禁有效性实测（变异测试）**：
 

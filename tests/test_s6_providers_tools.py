@@ -7,9 +7,9 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from first_agent.core.client import LLMClient
-from first_agent.evals.scripted import ScriptedLLM, json_obj, json_raw
-from first_agent.providers import (
+from wayfinder.core.client import LLMClient
+from wayfinder.evals.scripted import ScriptedLLM, json_obj, json_raw
+from wayfinder.providers import (
     FakeCalendarProvider,
     FakeDateTimeProvider,
     FakeTravelProvider,
@@ -17,15 +17,15 @@ from first_agent.providers import (
     LlmDateTimeProvider,
     LocalCalendarProvider,
 )
-from first_agent.providers.base import ProviderNotFound, ProviderUnavailable
-from first_agent.schemas.tool import ToolCall
-from first_agent.tools.builtin import (
+from wayfinder.providers.base import ProviderNotFound, ProviderUnavailable
+from wayfinder.schemas.tool import ToolCall
+from wayfinder.tools.builtin import (
     make_calendar_tool,
     make_resolve_datetime_tool,
     make_travel_time_tool,
 )
-from first_agent.tools.executor import ToolExecutor
-from first_agent.tools.registry import ToolRegistry
+from wayfinder.tools.executor import ToolExecutor
+from wayfinder.tools.registry import ToolRegistry
 
 TODAY = date(2026, 10, 10)
 FIXED_CLOCK = datetime(2026, 10, 10, 8, 30, tzinfo=timezone.utc)

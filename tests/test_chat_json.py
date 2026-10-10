@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel
 
-from first_agent.core.client import JSONValidationError, LLMClient, LLMError
+from wayfinder.core.client import JSONValidationError, LLMClient, LLMError
 
 
 class Weather(BaseModel):

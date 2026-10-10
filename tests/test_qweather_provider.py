@@ -6,8 +6,8 @@ from datetime import date, timedelta
 
 import pytest
 
-from first_agent.providers.base import ProviderNotFound, ProviderUnavailable
-from first_agent.providers.weather import QWeatherProvider
+from wayfinder.providers.base import ProviderNotFound, ProviderUnavailable
+from wayfinder.providers.weather import QWeatherProvider
 
 
 class StubResponse:

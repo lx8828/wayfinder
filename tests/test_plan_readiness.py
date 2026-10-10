@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from first_agent.evals.scripted import json_obj, text
+from wayfinder.evals.scripted import json_obj, text
 from tests.plan_helpers import build_engine, user_messages
 
 INVENTED_CITY_PLAN = {

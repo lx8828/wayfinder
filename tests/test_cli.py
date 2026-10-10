@@ -6,12 +6,12 @@ import argparse
 
 import pytest
 
-from first_agent.main import build_parser, main
+from wayfinder.main import build_parser, main
 
 
 def test_version_flag(capsys):
     assert main(["--version"]) == 0
-    assert "first-agent" in capsys.readouterr().out
+    assert "wayfinder" in capsys.readouterr().out
 
 
 def test_no_command_prints_help(capsys):

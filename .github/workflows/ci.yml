@@ -23,7 +23,7 @@ jobs:
 
       # 离线评测硬门禁：与仓库内 baseline.json 对比，稳定指标恶化即失败（exit 1）
       - name: 离线评测门禁
-        run: uv run first-agent eval --quiet
+        run: uv run wayfinder eval --quiet
 
       - name: 上传评测产物
         if: always()
@@ -31,5 +31,5 @@ jobs:
         with:
           name: eval-report
           path: |
-            src/first_agent/evals/current.json
-            src/first_agent/evals/diff.md
+            src/wayfinder/evals/current.json
+            src/wayfinder/evals/diff.md

@@ -13,19 +13,19 @@ import sys
 import pytest
 
 CASES = [
-    "import first_agent",
-    "import first_agent.runtime",
-    "import first_agent.core",
-    "import first_agent.memory",
-    "import first_agent.tools",
-    "import first_agent.providers",
-    "import first_agent.schemas",
-    "import first_agent.evals",
-    "import first_agent.main",
-    "import first_agent.runtime; from first_agent.core.engine import ToolAgentRuntime",
-    "import first_agent.memory; from first_agent.core.engine import ToolAgentRuntime",
-    "from first_agent.core.engine import ToolAgentRuntime; import first_agent.runtime",
-    "from first_agent.core.engine import ToolAgentRuntime; import first_agent.memory",
+    "import wayfinder",
+    "import wayfinder.runtime",
+    "import wayfinder.core",
+    "import wayfinder.memory",
+    "import wayfinder.tools",
+    "import wayfinder.providers",
+    "import wayfinder.schemas",
+    "import wayfinder.evals",
+    "import wayfinder.main",
+    "import wayfinder.runtime; from wayfinder.core.engine import ToolAgentRuntime",
+    "import wayfinder.memory; from wayfinder.core.engine import ToolAgentRuntime",
+    "from wayfinder.core.engine import ToolAgentRuntime; import wayfinder.runtime",
+    "from wayfinder.core.engine import ToolAgentRuntime; import wayfinder.memory",
 ]
 
 
@@ -39,6 +39,6 @@ def test_import_order_is_safe(code):
 
 
 def test_engine_is_reachable_from_documented_path():
-    from first_agent.core.engine import ToolAgentRuntime
+    from wayfinder.core.engine import ToolAgentRuntime
 
     assert ToolAgentRuntime is not None

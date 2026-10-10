@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from first_agent.core.client import LLMClient
-from first_agent.evals.scripted import ScriptedLLM, json_obj, json_raw
-from first_agent.memory.adjudicator import MemoryAdjudicator
+from wayfinder.core.client import LLMClient
+from wayfinder.evals.scripted import ScriptedLLM, json_obj, json_raw
+from wayfinder.memory.adjudicator import MemoryAdjudicator
 
 
 def make_adjudicator(script, **kwargs) -> MemoryAdjudicator:

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from first_agent.core.db import Database
-from first_agent.core.session import SessionRef, SessionResolver, SessionStore
-from first_agent.schemas.session import SessionSummary
+from wayfinder.core.db import Database
+from wayfinder.core.session import SessionRef, SessionResolver, SessionStore
+from wayfinder.schemas.session import SessionSummary
 
 REF = SessionRef(user_id="u1", session_id="s1")
 

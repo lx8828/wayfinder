@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from first_agent.schemas import (
+from wayfinder.schemas import (
     RELATION_TO_ACTION,
     MemoryCandidate,
     MemoryRelation,

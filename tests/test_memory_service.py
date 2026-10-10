@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import pytest
 
-from first_agent.core.client import LLMClient
-from first_agent.core.db import Database
-from first_agent.evals.scripted import ScriptedLLM, json_obj
-from first_agent.memory.extractor import ExtractionOutcome
-from first_agent.memory.service import MemoryService
-from first_agent.memory.store import MemoryStore
-from first_agent.schemas.memory import MemoryCandidate, MemoryRelation
+from wayfinder.core.client import LLMClient
+from wayfinder.core.db import Database
+from wayfinder.evals.scripted import ScriptedLLM, json_obj
+from wayfinder.memory.extractor import ExtractionOutcome
+from wayfinder.memory.service import MemoryService
+from wayfinder.memory.store import MemoryStore
+from wayfinder.schemas.memory import MemoryCandidate, MemoryRelation
 
 USER = "u1"
 

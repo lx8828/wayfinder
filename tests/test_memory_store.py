@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from first_agent.core.db import Database
-from first_agent.memory.store import MemoryStore
-from first_agent.schemas.memory import MemoryCandidate
+from wayfinder.core.db import Database
+from wayfinder.memory.store import MemoryStore
+from wayfinder.schemas.memory import MemoryCandidate
 
 
 def make_store() -> MemoryStore:

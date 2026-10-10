@@ -7,15 +7,15 @@ from pathlib import Path
 
 import pytest
 
-import first_agent.evals as evals_pkg
-from first_agent.core.client import LLMClient
-from first_agent.evals import load_cases, run_case
-from first_agent.evals.adapters import react_engine
-from first_agent.evals.scripted import ScriptedLLM, ToolCallSpec, fail, text, tool, tools
-from first_agent.providers import FakeWeatherProvider
-from first_agent.runtime import ReactEngine
-from first_agent.tools.builtin import make_time_tool, make_weather_tool
-from first_agent.tools.registry import ToolRegistry
+import wayfinder.evals as evals_pkg
+from wayfinder.core.client import LLMClient
+from wayfinder.evals import load_cases, run_case
+from wayfinder.evals.adapters import react_engine
+from wayfinder.evals.scripted import ScriptedLLM, ToolCallSpec, fail, text, tool, tools
+from wayfinder.providers import FakeWeatherProvider
+from wayfinder.runtime import ReactEngine
+from wayfinder.tools.builtin import make_time_tool, make_weather_tool
+from wayfinder.tools.registry import ToolRegistry
 
 FIXED_CLOCK = lambda: datetime(2026, 10, 10, 8, 30, tzinfo=timezone.utc)  # noqa: E731
 

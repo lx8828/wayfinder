@@ -6,15 +6,15 @@ import sqlite3
 
 import pytest
 
-from first_agent.core.db import Database
-from first_agent.memory.migrate import (
+from wayfinder.core.db import Database
+from wayfinder.memory.migrate import (
     V1_SCHEMA,
     map_category,
     map_key,
     migrate,
     read_v1_memories,
 )
-from first_agent.memory.store import MemoryStore
+from wayfinder.memory.store import MemoryStore
 
 # 本机 v1 归档库里**实际出现过**的 key / category 组合
 # （用真实数据验证映射表时发现的，见 design.md 0.1 的 R8）

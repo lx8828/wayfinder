@@ -1,5 +1,5 @@
 [project]
-name = "first-agent"
+name = "wayfinder"
 version = "0.2.0.dev0"
 description = "Weather & travel assistant on a from-scratch Tool Agent Runtime (ReAct + Plan-Execute + memory + eval gates)"
 readme = "README.md"
@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-first-agent = "first_agent.main:main"
+wayfinder = "wayfinder.main:main"
 
 [dependency-groups]
 dev = [

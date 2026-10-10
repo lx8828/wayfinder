@@ -521,7 +521,7 @@ class TravelAssistant(Agent):
 做新项目时，只需：
 
 ```python
-from first_agent.agent import Agent
+from wayfinder.agent import Agent
 
 class NewProjectAgent(Agent):
     def _build_system_prompt(self):

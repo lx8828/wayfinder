@@ -1,6 +1,6 @@
-# first-agent：一个手写的「天气出行助手」（Agent 运行时从零实现）
+# wayfinder：一个手写的「天气出行助手」（Agent 运行时从零实现）
 
-`first-agent` 是一个**天气出行助手**：问它天气、日程、两地耗时、当前时间，它会自己决定该调哪个工具、
+`wayfinder` 是一个**天气出行助手**：问它天气、日程、两地耗时、当前时间，它会自己决定该调哪个工具、
 多步的工具按依赖顺序调、缺信息就先追问，答完把值得记住的偏好写进长期记忆。
 
 它跟一般"调 API 拼问答"的助手不同之处不在功能，而在**它的 Agent 运行时是从零手写的**：
@@ -10,7 +10,7 @@
 
 ## 它是什么 / 能回答什么
 
-真实用法（`first-agent chat "..."`）：
+真实用法（`wayfinder chat "..."`）：
 
 | 你说 | 它做什么 |
 |---|---|
@@ -26,7 +26,7 @@
 ### 一次真实的运行（Trace 实录）
 
 ```bash
-first-agent chat --mode plan --show-thought "我住在重庆，明天下午想去公园，天气和日程允许吗？"
+wayfinder chat --mode plan --show-thought "我住在重庆，明天下午想去公园，天气和日程允许吗？"
 ```
 
 它自己生成的计划是三步，后两步都引用第一步的产出（`$steps.0.date`）：
@@ -82,14 +82,14 @@ step 2  get_calendar_events {"user_id": "2744ccd10c7533bd", "date": "$steps.0.da
 ```bash
 uv sync
 uv run pytest                # 521 个离线测试，不需要任何 API Key
-uv run first-agent eval      # 36 条用例 + 离线回归门禁，同样不需要 Key
+uv run wayfinder eval      # 36 条用例 + 离线回归门禁，同样不需要 Key
 ```
 
 需要真实模型时：
 
 ```bash
 cp .env.example .env         # 填 DEEPSEEK_API_KEY（天气 / 出行耗时可选，见 .env.example）
-uv run first-agent chat "重庆明天天气怎么样？" --mode react
+uv run wayfinder chat "重庆明天天气怎么样？" --mode react
 ```
 
 真实输出（deepseek-chat）：
@@ -102,7 +102,7 @@ uv run first-agent chat "重庆明天天气怎么样？" --mode react
 Plan 模式下可以看它怎么规划与调用工具：
 
 ```bash
-uv run first-agent chat --mode plan --show-thought "从重庆开车到成都大概要多久？"
+uv run wayfinder chat --mode plan --show-thought "从重庆开车到成都大概要多久？"
 ```
 
 要求：Python ≥ 3.13、[uv](https://docs.astral.sh/uv/)。离线测试与离线评测**零外部依赖**。
@@ -185,7 +185,7 @@ ToolAgentRuntime（组合根）            │
 
 | | 离线段 | 真 LLM 段 |
 |---|---|---|
-| 命令 | `first-agent eval` | `first-agent eval --real [--judge]` |
+| 命令 | `wayfinder eval` | `wayfinder eval --real [--judge]` |
 | 模型 | `ScriptedLLM`（脚本夹具） | `deepseek-chat` |
 | 外部世界 | Fake provider + 固定基准日 | **同样的** Fake provider |
 | 回答什么 | **Runtime 忠实度**（回归检测） | **模型能力 + 波动**（只告警） |
@@ -264,7 +264,7 @@ ToolAgentRuntime（组合根）            │
 - **端到端要一起读两个数**：`Plan Success Rate`（42.86）是「计划合法 + 答案通过断言」的乘积，
   而开放式用例的 judge 通过率是 82.22 —— 两者口径不同，**不要用其中一个否定另一个**。
 - **指标口径随迭代修订过**，历史批次的数字与当前不可直接比较；口径演进记录在
-  [`docs/design.md`](docs/design.md) 第 19 节，明细在 `src/first_agent/evals/repeats_live.json`。
+  [`docs/design.md`](docs/design.md) 第 19 节，明细在 `src/wayfinder/evals/repeats_live.json`。
 
 ### 门禁有效性：用变异测试证明"测试真的会红"
 
@@ -275,7 +275,7 @@ ToolAgentRuntime（组合根）            │
 | 去掉工具调用前的预算检查 | 3 条预算用例失败 |
 | 不返回工具观测数据 | 观测层断言全部失败 |
 
-产物落在 `src/first_agent/evals/`：`baseline.json`（离线基线）、`current.json`、`diff.md`
+产物落在 `src/wayfinder/evals/`：`baseline.json`（离线基线）、`current.json`、`diff.md`
 （真 LLM 段为 `*_live.*`）；`--repeat N` 另写 `repeats{suffix}.json`（每轮指标、波动、
 跨轮一致率、不稳定用例名单）。每次结果都记录 **git commit / model / prompt version /
 tool schema version / case set hash**，可以回答"这次指标变化对应哪次改动"。
@@ -287,11 +287,11 @@ tool schema version / case set hash**，可以回答"这次指标变化对应哪
 
 | 命令 | 作用 |
 |---|---|
-| `first-agent chat "<问题>" [--mode react\|plan] [--user U] [--session S] [--show-thought] [--show-memory] [--budget-ms N]` | 单轮对话（默认 `react`） |
-| `first-agent eval [--real] [--judge] [--repeat N] [--update-baseline] [--no-gate] [--quiet] [--out DIR]` | 跑评测与回归门禁；`--real --repeat 3 --judge` 给真 LLM 的均值/波动与跨轮一致率 |
-| `first-agent memory list [--user U \| --all-users] [--json]` | 查看长期记忆 |
-| `first-agent memory show <key> [--user U]` / `memory rm <key> [--user U]` | 查看 / 删除单条记忆 |
-| `first-agent trace stats [--dir DIR] [--json]` / `trace tail [--n N]` | Trace 聚合统计 / 最近事件 |
+| `wayfinder chat "<问题>" [--mode react\|plan] [--user U] [--session S] [--show-thought] [--show-memory] [--budget-ms N]` | 单轮对话（默认 `react`） |
+| `wayfinder eval [--real] [--judge] [--repeat N] [--update-baseline] [--no-gate] [--quiet] [--out DIR]` | 跑评测与回归门禁；`--real --repeat 3 --judge` 给真 LLM 的均值/波动与跨轮一致率 |
+| `wayfinder memory list [--user U \| --all-users] [--json]` | 查看长期记忆 |
+| `wayfinder memory show <key> [--user U]` / `memory rm <key> [--user U]` | 查看 / 删除单条记忆 |
+| `wayfinder trace stats [--dir DIR] [--json]` / `trace tail [--n N]` | Trace 聚合统计 / 最近事件 |
 
 `memory` / `trace` 只做读取与统计，数据层在 `core/inspect.py`（可直接单测），CLI 只负责打印。
 
@@ -354,7 +354,7 @@ tool schema version / case set hash**，可以回答"这次指标变化对应哪
 
 ```bash
 uv run pytest -q                  # 521 个测试，全部离线（ScriptedLLM + Fake provider）
-uv run first-agent eval --quiet   # 离线评测门禁，无需 API Key
+uv run wayfinder eval --quiet   # 离线评测门禁，无需 API Key
 ```
 
 - 每个里程碑一个 commit，改完跑一次全量测试 + 一次评测门禁。
@@ -369,7 +369,7 @@ uv run first-agent eval --quiet   # 离线评测门禁，无需 API Key
 ## 项目结构
 
 ```text
-src/first_agent/
+src/wayfinder/
 ├── core/        # client / context / session / budget / tracing / db / inspect / engine
 ├── runtime/     # react.py（ReAct 循环）、plan_execute.py（DAG 编排）、slots.py
 ├── tools/       # registry.py、executor.py、builtin/（工具契约，不含网络实现）
@@ -435,7 +435,7 @@ docs/design.md   # 设计文档：契约、决策记录、里程碑与实测结�
 
 ## Windows 注意（输出编码）
 
-`first-agent eval > report.txt` 或 `first-agent eval | Select-String ...` 时，Python 的 stdout 会从
+`wayfinder eval > report.txt` 或 `wayfinder eval | Select-String ...` 时，Python 的 stdout 会从
 "Windows 控制台 API" 退化为 **ANSI 代码页**（简中为 `gbk`），此时打印 `✅ / ✗ / ⚠ / ✓`
 会直接 `UnicodeEncodeError`：**命令 exit 1、输出文件全空**。CLI 启动时会 `_configure_stdio()`：
 

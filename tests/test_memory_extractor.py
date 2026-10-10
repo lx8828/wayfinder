@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from first_agent.core.client import LLMClient
-from first_agent.evals.scripted import ScriptedLLM, json_obj, json_raw
-from first_agent.memory.extractor import (
+from wayfinder.core.client import LLMClient
+from wayfinder.evals.scripted import ScriptedLLM, json_obj, json_raw
+from wayfinder.memory.extractor import (
     CANONICAL_KEYS,
     MemoryExtractor,
     normalize_category,

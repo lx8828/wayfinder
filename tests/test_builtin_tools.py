@@ -6,20 +6,20 @@ from datetime import datetime, timezone
 
 import pytest
 
-from first_agent.providers import (
+from wayfinder.providers import (
     FakeCalendarProvider,
     FakeTravelProvider,
     FakeWeatherProvider,
 )
-from first_agent.schemas.tool import ToolCall, ToolSpec
-from first_agent.tools.builtin import (
+from wayfinder.schemas.tool import ToolCall, ToolSpec
+from wayfinder.tools.builtin import (
     make_calendar_tool,
     make_time_tool,
     make_travel_time_tool,
     make_weather_tool,
 )
-from first_agent.tools.executor import ToolExecutor
-from first_agent.tools.registry import ToolRegistry
+from wayfinder.tools.executor import ToolExecutor
+from wayfinder.tools.registry import ToolRegistry
 
 
 def run_tool(spec: ToolSpec, arguments: dict):
@@ -153,8 +153,8 @@ def test_tool_mode_enum_matches_provider_supported_modes():
 
     from typing import get_args
 
-    from first_agent.providers.travel import MODE_SPEED_KMH
-    from first_agent.tools.builtin.travel import TravelMode
+    from wayfinder.providers.travel import MODE_SPEED_KMH
+    from wayfinder.tools.builtin.travel import TravelMode
 
     assert set(get_args(TravelMode)) == set(MODE_SPEED_KMH)
 

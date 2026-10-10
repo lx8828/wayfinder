@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from first_agent.runtime import PlanExecutionError, resolve_arguments, topological_order, validate_plan
-from first_agent.schemas.plan import Plan, PlanStep
+from wayfinder.runtime import PlanExecutionError, resolve_arguments, topological_order, validate_plan
+from wayfinder.schemas.plan import Plan, PlanStep
 from tests.plan_helpers import make_registry
 
 

@@ -6,10 +6,10 @@ import time
 
 from pydantic import BaseModel, Field
 
-from first_agent.providers.base import ProviderNotFound, ProviderTimeout, ProviderUnavailable
-from first_agent.schemas.tool import ToolCall, ToolSpec
-from first_agent.tools.executor import ToolExecutor
-from first_agent.tools.registry import ToolRegistry
+from wayfinder.providers.base import ProviderNotFound, ProviderTimeout, ProviderUnavailable
+from wayfinder.schemas.tool import ToolCall, ToolSpec
+from wayfinder.tools.executor import ToolExecutor
+from wayfinder.tools.registry import ToolRegistry
 
 
 class EchoIn(BaseModel):

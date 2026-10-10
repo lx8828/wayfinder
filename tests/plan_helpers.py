@@ -7,24 +7,24 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from first_agent.core.budget import DEFAULT_BUDGET_MS
-from first_agent.core.client import LLMClient
-from first_agent.evals.scripted import ScriptedLLM
-from first_agent.providers import (
+from wayfinder.core.budget import DEFAULT_BUDGET_MS
+from wayfinder.core.client import LLMClient
+from wayfinder.evals.scripted import ScriptedLLM
+from wayfinder.providers import (
     FakeCalendarProvider,
     FakeDateTimeProvider,
     FakeTravelProvider,
     FakeWeatherProvider,
 )
-from first_agent.runtime import PlanExecuteEngine
-from first_agent.tools.builtin import (
+from wayfinder.runtime import PlanExecuteEngine
+from wayfinder.tools.builtin import (
     make_calendar_tool,
     make_resolve_datetime_tool,
     make_time_tool,
     make_travel_time_tool,
     make_weather_tool,
 )
-from first_agent.tools.registry import ToolRegistry
+from wayfinder.tools.registry import ToolRegistry
 
 FIXED_TODAY = date(2026, 10, 10)
 FIXED_CLOCK = lambda: datetime(2026, 10, 10, 8, 30, tzinfo=timezone.utc)  # noqa: E731

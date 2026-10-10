@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from first_agent.evals.case import (
+from wayfinder.evals.case import (
     Assertion,
     EvalCase,
     evaluate_assertion,
@@ -22,7 +22,7 @@ from first_agent.evals.case import (
     load_cases,
     validate_assertion,
 )
-from first_agent.evals.runner import RunOutcome
+from wayfinder.evals.runner import RunOutcome
 
 # -- 证据层 ----------------------------------------------------------------
 
@@ -183,7 +183,7 @@ def test_case_set_has_no_brittle_answer_only_fact_assertions():
     import json
     from pathlib import Path
 
-    import first_agent.evals as evals_pkg
+    import wayfinder.evals as evals_pkg
 
     path = Path(evals_pkg.__file__).parent / "cases.jsonl"
     cases = load_cases(path)

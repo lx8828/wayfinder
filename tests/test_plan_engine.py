@@ -4,18 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import first_agent.evals as evals_pkg
-from first_agent.core.client import LLMClient
-from first_agent.core.db import Database
-from first_agent.core.engine import ToolAgentRuntime
-from first_agent.core.session import SessionResolver, SessionStore
-from first_agent.evals import load_cases, run_case
-from first_agent.evals.adapters import runtime_engine
-from first_agent.evals.scripted import ScriptedLLM, fail, json_obj, json_raw, text
-from first_agent.memory.store import MemoryStore
-from first_agent.runtime import PlanExecuteEngine, ReactEngine
-from first_agent.schemas.memory import MemoryCandidate
-from first_agent.schemas.session import WorkingState
+import wayfinder.evals as evals_pkg
+from wayfinder.core.client import LLMClient
+from wayfinder.core.db import Database
+from wayfinder.core.engine import ToolAgentRuntime
+from wayfinder.core.session import SessionResolver, SessionStore
+from wayfinder.evals import load_cases, run_case
+from wayfinder.evals.adapters import runtime_engine
+from wayfinder.evals.scripted import ScriptedLLM, fail, json_obj, json_raw, text
+from wayfinder.memory.store import MemoryStore
+from wayfinder.runtime import PlanExecuteEngine, ReactEngine
+from wayfinder.schemas.memory import MemoryCandidate
+from wayfinder.schemas.session import WorkingState
 from tests.plan_helpers import build_engine, make_registry, user_messages
 
 CASES_PATH = Path(evals_pkg.__file__).parent / "cases.jsonl"

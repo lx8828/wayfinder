@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from first_agent.providers import FakeCalendarProvider, FakeWeatherProvider
-from first_agent.providers.base import (
+from wayfinder.providers import FakeCalendarProvider, FakeWeatherProvider
+from wayfinder.providers.base import (
     CalendarProvider,
     ProviderNotFound,
     ProviderTimeout,

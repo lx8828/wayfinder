@@ -8,20 +8,20 @@ from __future__ import annotations
 
 import pytest
 
-from first_agent.core.budget import (
+from wayfinder.core.budget import (
     BudgetExceeded,
     RunBudget,
     build_partial_answer,
     check_budget,
 )
-from first_agent.core.client import LLMClient
-from first_agent.core.db import Database
-from first_agent.core.engine import ToolAgentRuntime
-from first_agent.core.session import SessionResolver, SessionStore
-from first_agent.evals.scripted import ScriptedLLM, json_obj, json_raw, text, tool
-from first_agent.memory.store import MemoryStore
-from first_agent.runtime import PlanExecuteEngine, ReactEngine
-from first_agent.schemas.tool import ToolResult
+from wayfinder.core.client import LLMClient
+from wayfinder.core.db import Database
+from wayfinder.core.engine import ToolAgentRuntime
+from wayfinder.core.session import SessionResolver, SessionStore
+from wayfinder.evals.scripted import ScriptedLLM, json_obj, json_raw, text, tool
+from wayfinder.memory.store import MemoryStore
+from wayfinder.runtime import PlanExecuteEngine, ReactEngine
+from wayfinder.schemas.tool import ToolResult
 from tests.plan_helpers import build_engine, make_registry, user_messages
 
 

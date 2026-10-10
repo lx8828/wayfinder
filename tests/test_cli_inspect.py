@@ -6,12 +6,12 @@ import json
 
 import pytest
 
-from first_agent.core import inspect as inspect_mod
-from first_agent.core.db import Database
-from first_agent.core.tracing import TraceLogger
-from first_agent.main import main
-from first_agent.memory.store import MemoryStore
-from first_agent.schemas.memory import MemoryCandidate
+from wayfinder.core import inspect as inspect_mod
+from wayfinder.core.db import Database
+from wayfinder.core.tracing import TraceLogger
+from wayfinder.main import main
+from wayfinder.memory.store import MemoryStore
+from wayfinder.schemas.memory import MemoryCandidate
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ def seeded_db(tmp_path, monkeypatch):
     """准备一个有记忆的库，并把 CLI 指向它。"""
 
     db_path = tmp_path / "agent.db"
-    monkeypatch.setenv("FIRST_AGENT_DB", str(db_path))
+    monkeypatch.setenv("WAYFINDER_DB", str(db_path))
     with Database(db_path) as db:
         store = MemoryStore(db)
         store.apply_candidate(
@@ -83,7 +83,7 @@ def test_memory_show_without_key_is_usage_error(seeded_db, capsys):
 
 
 def test_memory_list_without_database_is_empty_not_error(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("FIRST_AGENT_DB", str(tmp_path / "missing.db"))
+    monkeypatch.setenv("WAYFINDER_DB", str(tmp_path / "missing.db"))
 
     assert main(["memory", "list", "--user", "u1"]) == 0
     assert "还没有任何记忆" in capsys.readouterr().out

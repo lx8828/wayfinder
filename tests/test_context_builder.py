@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from first_agent.core.context import (
+from wayfinder.core.context import (
     DEFAULT_SYSTEM_PROMPT,
     ContextBuilder,
     ContextInputs,
     estimate_tokens,
 )
-from first_agent.schemas.memory import UserProfile
-from first_agent.schemas.session import SessionSummary, WorkingState
+from wayfinder.schemas.memory import UserProfile
+from wayfinder.schemas.session import SessionSummary, WorkingState
 
 
 def test_system_prompt_includes_profile_state_and_summary():

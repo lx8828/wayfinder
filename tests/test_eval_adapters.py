@@ -5,20 +5,20 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-import first_agent.evals as evals_pkg
-from first_agent.core.client import LLMClient
-from first_agent.core.db import Database
-from first_agent.core.engine import ToolAgentRuntime
-from first_agent.core.session import SessionResolver, SessionStore
-from first_agent.evals import EvalCase, load_cases, run_case
-from first_agent.evals.adapters import runtime_engine
-from first_agent.evals.scripted import ScriptedLLM, json_obj, json_raw, text
-from first_agent.memory.service import MemoryService
-from first_agent.memory.store import MemoryStore
-from first_agent.providers import FakeWeatherProvider
-from first_agent.runtime import ReactEngine
-from first_agent.tools.builtin import make_time_tool, make_weather_tool
-from first_agent.tools.registry import ToolRegistry
+import wayfinder.evals as evals_pkg
+from wayfinder.core.client import LLMClient
+from wayfinder.core.db import Database
+from wayfinder.core.engine import ToolAgentRuntime
+from wayfinder.core.session import SessionResolver, SessionStore
+from wayfinder.evals import EvalCase, load_cases, run_case
+from wayfinder.evals.adapters import runtime_engine
+from wayfinder.evals.scripted import ScriptedLLM, json_obj, json_raw, text
+from wayfinder.memory.service import MemoryService
+from wayfinder.memory.store import MemoryStore
+from wayfinder.providers import FakeWeatherProvider
+from wayfinder.runtime import ReactEngine
+from wayfinder.tools.builtin import make_time_tool, make_weather_tool
+from wayfinder.tools.registry import ToolRegistry
 
 FIXED_CLOCK = lambda: datetime(2026, 10, 10, 8, 30, tzinfo=timezone.utc)  # noqa: E731
 CASES_PATH = Path(evals_pkg.__file__).parent / "cases.jsonl"

@@ -7,8 +7,8 @@ from enum import Enum
 import pytest
 from pydantic import BaseModel, Field
 
-from first_agent.schemas.tool import ToolSpec
-from first_agent.tools.registry import ToolRegistry
+from wayfinder.schemas.tool import ToolSpec
+from wayfinder.tools.registry import ToolRegistry
 
 
 class Mood(str, Enum):

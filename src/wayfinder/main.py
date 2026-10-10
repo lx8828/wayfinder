@@ -1,0 +1,501 @@
+"""wayfinder 命令行入口：``chat`` / ``eval`` / ``memory`` / ``trace``。
+
+CLI 只负责参数解析与打印；数据读取与统计在 ``core.inspect``，
+装配与业务在 ``core.engine`` / ``runtime``，以保证这些能力都可被单元测试直接调用。
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from typing import Sequence
+
+from wayfinder import __version__
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="wayfinder",
+        description="wayfinder —— 天气出行助手（手写 Agent 运行时：ReAct / Plan-Execute / 记忆 / 评测门禁）",
+    )
+    parser.add_argument("--version", action="store_true", help="打印版本并退出")
+    subparsers = parser.add_subparsers(dest="command")
+
+    chat = subparsers.add_parser("chat", help="单轮对话（--mode react / plan）")
+    chat.add_argument("message", help="用户输入")
+    chat.add_argument("--mode", default="react", choices=["react", "plan"], help="对话模式")
+    chat.add_argument("--user", default="demo", help="用户 ID（用于 Trace）")
+    chat.add_argument("--session", default="default", help="会话 ID（S4 起用于会话持久化）")
+    chat.add_argument("--show-thought", action="store_true", help="在回答前打印 Thought")
+    chat.add_argument("--show-memory", action="store_true", help="在回答后打印本轮记忆动作")
+    chat.add_argument(
+        "--budget-ms", type=int, default=60_000, help="单次 run 耗时预算（毫秒，默认 60000）"
+    )
+    chat.add_argument("--no-trace", action="store_true", help="关闭 Trace 写入")
+
+    evals = subparsers.add_parser("eval", help="运行评测用例并做 baseline 回归门禁")
+    evals.add_argument("--real", action="store_true", help="用真实 LLM 跑（波动指标，需要 API Key）")
+    evals.add_argument("--cases", default=None, help="用例文件（默认 evals/cases.jsonl）")
+    evals.add_argument("--out", default=None, help="产物目录（默认 evals/）")
+    evals.add_argument(
+        "--update-baseline", action="store_true", help="把本次结果写为基线后退出"
+    )
+    evals.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="重复跑 N 次并给出 Run-to-run Consistency（真 LLM 段用来看稳定性）",
+    )
+    evals.add_argument("--no-gate", action="store_true", help="只报告，不因门禁失败返回非零")
+    evals.add_argument(
+        "--judge", action="store_true", help="额外跑 judge_cases.jsonl（开放式答案，需配合 --real）"
+    )
+    evals.add_argument("--quiet", action="store_true", help="只输出门禁结论与失败用例")
+
+    memory = subparsers.add_parser("memory", help="查看 / 管理长期记忆")
+    memory.add_argument("action", choices=["list", "show", "rm"], help="list / show / rm")
+    memory.add_argument("key", nargs="?", help="show 与 rm 需要指定 key")
+    memory.add_argument("--user", default="demo", help="用户 ID（默认 demo）")
+    memory.add_argument("--all-users", action="store_true", help="list 时列出全部用户")
+    memory.add_argument("--json", action="store_true", help="以 JSON 输出")
+
+    trace = subparsers.add_parser("trace", help="查看 Trace 记录与统计")
+    trace.add_argument("action", nargs="?", default="stats", choices=["tail", "stats"])
+    trace.add_argument("--n", type=int, default=20, help="tail 显示条数（默认 20）")
+    trace.add_argument("--dir", default=None, help="Trace 目录（默认 var/traces）")
+    trace.add_argument("--json", action="store_true", help="以 JSON 输出")
+    return parser
+
+
+def _configure_stdio() -> None:
+    """让中文与 ``✅ / ✗ / ⚠`` 一类的符号在任何控制台/重定向下都不崩。
+
+    Windows 上 stdout 被**重定向或管道**时，Python 会用 ANSI 代码页（简中为 ``gbk``），
+    打印 ``✅``/``✗`` 会直接 ``UnicodeEncodeError``：``wayfinder eval | Select-String``
+    或 ``wayfinder eval > out.txt`` 就中招（交互式控制台走 Windows 控制台 API，反而不受影响，
+    所以这个坑只在重定向时出现）。处理方式：
+
+    - **非交互**（文件 / 管道）→ 切成 UTF-8：与仓库里所有产物（`diff.md`、JSON）一致，
+      重定向出来就是正确的 UTF-8 文件；
+    - **交互式控制台** → 只把 ``errors`` 设为 ``replace``，保留控制台自身编码，
+      中文照常显示，遇到底层不支持的符号降级为 ``?`` 而不是抛异常。
+    """
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:  # 例如被测试框架替换成不支持 reconfigure 的对象
+            continue
+        try:
+            if getattr(stream, "isatty", None) and stream.isatty():
+                reconfigure(errors="replace")
+            else:
+                reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):  # pragma: no cover - 平台相关
+            pass
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    _configure_stdio()
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.version:
+        print(f"wayfinder {__version__}")
+        return 0
+    if args.command is None:
+        parser.print_help()
+        return 0
+    if args.command == "chat":
+        return _run_chat(args)
+    if args.command == "eval":
+        return _run_eval(args)
+    if args.command == "memory":
+        return _run_memory(args)
+    if args.command == "trace":
+        return _run_trace(args)
+
+    print(f"[wayfinder] 未知子命令：{args.command!r}", file=sys.stderr)
+    return 2
+
+
+def _run_chat(args: argparse.Namespace) -> int:
+    # 延迟导入：让 --version / --help 不依赖 openai / httpx / dotenv
+    from pathlib import Path
+
+    from dotenv import load_dotenv
+    from openai import OpenAI
+
+    from wayfinder.core.client import LLMClient
+    from wayfinder.core.context import SUMMARY_TRIGGER_TOKENS, SUMMARY_TRIGGER_TURNS
+    from wayfinder.core.db import Database
+    from wayfinder.core.engine import ToolAgentRuntime
+    from wayfinder.core.session import SessionStore
+    from wayfinder.core.tracing import TraceLogger
+    from wayfinder.memory.service import MemoryService
+    from wayfinder.memory.store import MemoryStore
+    from wayfinder.memory.summarizer import SessionSummarizer
+    from wayfinder.providers import (
+        AmapTravelProvider,
+        HeuristicTravelProvider,
+        LlmDateTimeProvider,
+        LocalCalendarProvider,
+        QWeatherProvider,
+    )
+    from wayfinder.runtime import PlanExecuteEngine, ReactEngine
+    from wayfinder.tools.builtin import (
+        make_calendar_tool,
+        make_resolve_datetime_tool,
+        make_time_tool,
+        make_travel_time_tool,
+        make_weather_tool,
+    )
+    from wayfinder.tools.registry import ToolRegistry
+
+    load_dotenv()
+
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    if not api_key:
+        print("[wayfinder] 缺少 DEEPSEEK_API_KEY（可在 .env 中配置）。", file=sys.stderr)
+        return 2
+
+    tracer = TraceLogger(
+        directory=os.getenv("WAYFINDER_TRACE_DIR", "var/traces"),
+        mode=os.getenv("TRACE_MODE", "safe"),
+        enabled=not args.no_trace,
+    )
+    sdk = OpenAI(
+        api_key=api_key,
+        base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+    )
+    client = LLMClient(sdk, model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"), tracer=tracer)
+
+    registry = ToolRegistry()
+    registry.register(make_time_tool())
+    registry.register(make_resolve_datetime_tool(LlmDateTimeProvider(client, tracer=tracer)))
+    # 配置了 AMAP_API_KEY 就走**真实路径规划**；否则退化为确定性启发式
+    # （两种实现的 source 字段不同，模型与用户都能看出数据是哪来的）
+    amap_key = os.getenv("AMAP_API_KEY")
+    if amap_key:
+        registry.register(
+            make_travel_time_tool(
+                AmapTravelProvider(api_key=amap_key, base_url=os.getenv("AMAP_BASE_URL"))
+            )
+        )
+    else:
+        registry.register(make_travel_time_tool(HeuristicTravelProvider()))
+    registry.register(make_calendar_tool(LocalCalendarProvider(os.getenv("CALENDAR_PATH", "var/calendar.json"))))
+    if os.getenv("QWEATHER_API_KEY"):
+        registry.register(
+            make_weather_tool(
+                QWeatherProvider(
+                    api_key=os.environ["QWEATHER_API_KEY"], host=os.getenv("QWEATHER_HOST")
+                )
+            )
+        )
+    else:
+        print("[wayfinder] 未配置 QWEATHER_API_KEY，本轮不注册 get_weather。", file=sys.stderr)
+
+    db_path = Path(os.getenv("WAYFINDER_DB", "var/agent.db"))
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 摘要阈值可配置（design 10.1「阈值必须配置化」）
+    summary_trigger_turns = int(os.getenv("SUMMARY_TRIGGER_TURNS", SUMMARY_TRIGGER_TURNS))
+    summary_trigger_tokens = int(os.getenv("SUMMARY_TRIGGER_TOKENS", SUMMARY_TRIGGER_TOKENS))
+
+    with Database(db_path) as db:
+        sessions = SessionStore(db)
+        memories = MemoryStore(db)
+        runtime = ToolAgentRuntime(
+            engine=ReactEngine(client, registry, tracer=tracer),
+            plan_engine=PlanExecuteEngine(client, registry, tracer=tracer),
+            sessions=sessions,
+            memories=memories,
+            memory_service=MemoryService(client, memories, tracer=tracer),
+            summarizer=SessionSummarizer(
+                client,
+                sessions,
+                trigger_turns=summary_trigger_turns,
+                trigger_tokens=summary_trigger_tokens,
+                tracer=tracer,
+            ),
+            # 窗口策略必须与摘要触发阈值一致，否则会出现「既不摘要也不保留」的缺口
+            summary_trigger_turns=summary_trigger_turns,
+            budget_ms=args.budget_ms,
+            tracer=tracer,
+        )
+        tracer.start_run(
+            user_id=args.user, session_id=args.session, mode=args.mode, mode_selection=args.mode
+        )
+        outcome = runtime.chat(
+            args.message, user_id=args.user, session_id=args.session, mode=args.mode
+        )
+
+    result = outcome.result
+    # 统一读取：PlanResult 与 ReactResult 都暴露 thoughts（降级到 ReAct 时同样有值）
+    thoughts = list(getattr(result, "thoughts", None) or [])
+    if args.show_thought and thoughts:
+        print("--- Thought ---")
+        for index, thought in enumerate(thoughts, 1):
+            print(f"[{index}] {thought}")
+        print("---------------")
+
+    print(result.answer)
+
+    if args.show_memory and (outcome.memory_actions or outcome.summary_action):
+        print("--- Memory ---")
+        for key, action in outcome.memory_actions.items():
+            print(f"  {key}: {action}")
+        if outcome.summary_action and outcome.summary_action != "nothing_to_do":
+            covered = outcome.summary_covered_through
+            print(f"  短期摘要: {outcome.summary_action}（覆盖到第 {covered} 轮）")
+        print("--------------")
+
+    tracer.end_run(
+        status=result.status,
+        latency_ms=result.latency_ms,
+        final_answer=result.answer,
+        steps=result.steps,
+        tool_calls=result.tool_calls,
+        memory_actions=outcome.memory_actions,
+        budget_spent_ms=outcome.budget_spent_ms,
+        degraded_to=getattr(result, "degraded_to", None),
+        summary_action=outcome.summary_action,
+        summary_covered_through=outcome.summary_covered_through,
+    )
+    # need_info（追问）是正常结果，不是错误
+    return 0 if result.status in {"success", "need_info"} else 1
+
+
+def _run_eval(args: argparse.Namespace) -> int:
+    """离线/真 LLM 评测 + baseline 回归门禁（design.md 16.4 / 16.5）。"""
+
+    from pathlib import Path
+
+    from wayfinder.evals import offline, suite
+
+    cases_path = Path(args.cases) if args.cases else Path(__file__).resolve().parent / "evals" / "cases.jsonl"
+    cases = suite.load_cases_file(cases_path)
+    if not cases:
+        print(f"[wayfinder] 用例文件为空：{cases_path}", file=sys.stderr)
+        return 2
+    out_dir = Path(args.out) if args.out else cases_path.parent
+    client = None
+
+    if args.real:
+        from wayfinder.evals import live
+
+        try:
+            client = live.build_live_client()
+        except RuntimeError as exc:
+            print(f"[wayfinder] {exc}", file=sys.stderr)
+            return 2
+        factory = live.live_engine_factory(client=client)
+        mode, model, suffix = "real", os.getenv("DEEPSEEK_MODEL", live.DEFAULT_MODEL), "_live"
+    else:
+        if args.judge:
+            print("[wayfinder] --judge 需要与 --real 一起使用（裁判必须调真实模型）。", file=sys.stderr)
+            return 2
+        factory = offline.offline_engine_factory
+        mode, model, suffix = "offline", "scripted+fake", ""
+
+    metadata = suite.build_metadata(
+        cases_path=cases_path,
+        mode=mode,
+        model=model,
+        registry=offline.build_registry(cases[0]),
+    )
+    repeats = None
+    if args.repeat > 1:
+        repeats = suite.run_repeated(cases, factory, metadata=metadata, repeat=args.repeat)
+        consistency = repeats.consistency()
+        metrics = repeats.metrics_mean
+        if consistency.get("cases"):
+            # design 16.6 的波动指标：只统计裁判/用例结论的跨轮一致率
+            metrics["Run-to-run Consistency"] = consistency["passed_consistency"]
+        run = suite.SuiteRun(
+            checks=repeats.runs[-1].checks,
+            metrics=metrics,
+            metadata={**metadata, "repeat": args.repeat},
+        )
+        if not args.quiet:
+            print(
+                f"[wayfinder] 重复 {args.repeat} 次 × {len(cases)} 条用例"
+                f"（mode={mode}，model={model}）"
+            )
+            print(suite.format_repeat_report(repeats))
+    else:
+        run = suite.run_suite(cases, factory, metadata=metadata)
+        if not args.quiet:
+            print(f"[wayfinder] 评测完成：{len(run.checks)} 条用例（mode={mode}，model={model}）")
+            print(suite.metrics_report(run.metrics))
+
+    if args.judge:
+        from wayfinder.evals import judge as judge_mod
+
+        judge_cases = judge_mod.load_judge_cases(cases_path.parent / "judge_cases.jsonl")
+        judge = judge_mod.LlmJudge(client)
+        rates: list[float | None] = []
+        for index in range(max(1, args.repeat)):
+            judged = judge_mod.run_judge_cases(judge_cases, factory, judge)
+            rates.append(judge_mod.task_success_rate(judged))
+            if not args.quiet:
+                print(f"--- judge 第 {index + 1} 轮 ---")
+                print(judge_mod.format_judge_report(judged))
+        scored = [rate for rate in rates if rate is not None]
+        if scored:
+            run.metrics["Task Success Rate"] = round(sum(scored) / len(scored), 2)
+        # 摘要里必须显示单条用例权重与轮间摆动：否则一次抖动会被读成能力剧变
+        print(judge_mod.judge_summary(rates, len(judge_cases)))
+        if repeats is not None:
+            repeats.judge_rates = rates
+
+    if repeats is not None:
+        path = suite.write_repeats(out_dir / f"repeats{suffix}.json", repeats)
+        print(f"[wayfinder] 每轮明细：{path}")
+
+    failing = repeats.all_failing_checks() if repeats is not None else run.failures
+
+    baseline_path = out_dir / f"baseline{suffix}.json"
+    if args.update_baseline:
+        if failing:
+            print(suite.failure_report(failing), file=sys.stderr)
+            print(
+                f"[wayfinder] 有 {len(failing)} 条用例未通过，拒绝写为基线。",
+                file=sys.stderr,
+            )
+            return 1
+        suite.save_baseline(baseline_path, run)
+        paths = suite.write_outputs(run, out_dir=out_dir, suffix=suffix)
+        print(f"[wayfinder] 基线已更新：{baseline_path}")
+        print(f"[wayfinder] 当前结果：{paths['current']}")
+        return 0
+
+    gate = suite.evaluate_gate(suite.load_baseline(baseline_path), run.metrics)
+    paths = suite.write_outputs(run, out_dir=out_dir, suffix=suffix, gate=gate)
+    print(f"[wayfinder] 产物：{paths['current']} / {paths.get('diff', '—')}")
+    print(suite.failure_report(failing))
+    if not args.quiet:
+        print(gate.diff_markdown)
+
+    if gate.failed_deltas:
+        names = "、".join(delta.name for delta in gate.failed_deltas)
+        print(f"[wayfinder] 门禁失败：稳定指标恶化 —— {names}", file=sys.stderr)
+        return 0 if args.no_gate else 1
+    if gate.warnings:
+        names = "、".join(delta.name for delta in gate.warnings)
+        print(f"[wayfinder] 警告（波动指标恶化，需人工复核）：{names}", file=sys.stderr)
+    if failing:
+        print(f"[wayfinder] 门禁失败：{len(failing)} 条用例未通过", file=sys.stderr)
+        return 0 if args.no_gate else 1
+
+    print("[wayfinder] 门禁通过 ✅")
+    return 0
+
+
+def _run_memory(args: argparse.Namespace) -> int:
+    """查看 / 管理长期记忆（只读为主，rm 是显式删除）。"""
+
+    import json
+    from pathlib import Path
+
+    from wayfinder.core import inspect as inspect_mod
+    from wayfinder.core.db import Database
+    from wayfinder.memory.store import MemoryStore
+
+    if args.action in ("show", "rm") and not args.key:
+        print(f"[wayfinder] memory {args.action} 需要指定 key。", file=sys.stderr)
+        return 2
+
+    db_path = Path(os.getenv("WAYFINDER_DB", "var/agent.db"))
+    if args.action == "list" and not db_path.exists():
+        print(f"[wayfinder] 数据库不存在：{db_path}（还没有任何记忆）")
+        return 0
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with Database(db_path) as db:
+        store = MemoryStore(db)
+
+        if args.action == "list":
+            by_user = inspect_mod.list_memories(
+                store, None if args.all_users else args.user
+            )
+            print(
+                inspect_mod.memory_as_json(by_user)
+                if args.json
+                else inspect_mod.format_memories(by_user)
+            )
+            return 0
+
+        if args.action == "show":
+            record = store.get(args.user, args.key)
+            if record is None:
+                print(f"[wayfinder] 没有记忆：{args.user}/{args.key}", file=sys.stderr)
+                return 1
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "user_id": record.user_id,
+                            "key": record.key,
+                            "value": record.value,
+                            "category": record.category,
+                            "source": record.source,
+                            "updated_at": record.updated_at,
+                            "last_seen_at": record.last_seen_at,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+            else:
+                print(
+                    f"{record.key} = {record.value}"
+                    f"（category={record.category}，来源={record.source}，"
+                    f"最近命中={record.last_seen_at}）"
+                )
+            return 0
+
+        removed = store.delete(args.user, args.key)
+        print(f"[wayfinder] {'已删除' if removed else '不存在'}：{args.user}/{args.key}")
+        return 0 if removed else 1
+
+
+def _run_trace(args: argparse.Namespace) -> int:
+    """查看 Trace 最近事件与聚合统计（Trace 在写入时已按 TRACE_MODE 脱敏）。"""
+
+    import json
+    from pathlib import Path
+
+    from wayfinder.core import inspect as inspect_mod
+
+    directory = Path(args.dir or os.getenv("WAYFINDER_TRACE_DIR", "var/traces"))
+    limit = args.n if args.action == "tail" else 5000
+    read = inspect_mod.read_trace_events(directory, limit=limit)
+
+    if not read.events:
+        print(f"[wayfinder] 没有找到 Trace 记录：{directory}", file=sys.stderr)
+        return 0
+
+    if args.action == "tail":
+        print(
+            json.dumps(read.events, ensure_ascii=False, indent=2)
+            if args.json
+            else inspect_mod.format_events(read.events, limit=args.n)
+        )
+    else:
+        stats = inspect_mod.trace_stats(read.events)
+        print(
+            json.dumps(stats, ensure_ascii=False, indent=2, sort_keys=True)
+            if args.json
+            else inspect_mod.format_stats(stats)
+        )
+
+    if read.malformed:
+        print(f"[wayfinder] 跳过 {read.malformed} 条无法解析的记录", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -3,10 +3,10 @@
 用法：
 
     uv run python scripts/migrate_memory_v1.py
-    uv run python scripts/migrate_memory_v1.py --v1 archive/handwritten_v1/src/first_agent/memory/memory.db --v2 var/agent.db --user-id demo
+    uv run python scripts/migrate_memory_v1.py --v1 archive/handwritten_v1/src/wayfinder/memory/memory.db --v2 var/agent.db --user-id demo
     uv run python scripts/migrate_memory_v1.py --no-backup
 
-真正的逻辑在 `first_agent.memory.migrate`（便于单元测试）。
+真正的逻辑在 `wayfinder.memory.migrate`（便于单元测试）。
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from first_agent.memory.migrate import (  # noqa: E402
+from wayfinder.memory.migrate import (  # noqa: E402
     DEFAULT_V1_PATH,
     DEFAULT_V2_PATH,
     migrate,

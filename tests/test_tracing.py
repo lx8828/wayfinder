@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from first_agent.core.tracing import (
+from wayfinder.core.tracing import (
     TraceLogger,
     hash_identifier,
     mask_sensitive,
