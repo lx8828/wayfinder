@@ -53,7 +53,7 @@ step 2  get_calendar_events {"user_id": "2744ccd10c7533bd", "date": "$steps.0.da
 | 工具 | 作用 | 它在评测里负责什么 |
 |---|---|---|
 | `get_weather` | 城市天气 | 最常用的单工具场景 |
-| `estimate_travel_time` | 两地耗时 | **双参数**，能与日期/天气组成依赖链 |
+| `estimate_travel_time` | 两地耗时（**高德真实路径规划**，未配 Key 时用启发式估算） | **双参数**，能与日期/天气组成依赖链 |
 | `resolve_datetime` | "明天下午" → `2026-10-11` / `14:00` | 产生**跨步骤引用**（`$steps.0.date`）的关键 |
 | `get_calendar_events` | 某一天的日程 | 依赖运行时注入 `user_id`（模型不可能知道） |
 | `get_current_time` | 当前时间 | 纯确定性输出，用来验证"不该编造" |
@@ -87,7 +87,7 @@ uv run first-agent eval      # 36 条用例 + 离线回归门禁，同样不需�
 需要真实模型时：
 
 ```bash
-cp .env.example .env         # 填 DEEPSEEK_API_KEY（天气工具可选，未配置时不注册）
+cp .env.example .env         # 填 DEEPSEEK_API_KEY（天气 / 出行耗时可选，见 .env.example）
 uv run first-agent chat "重庆明天天气怎么样？" --mode react
 ```
 
@@ -316,12 +316,17 @@ tool schema version / case set hash**，可以回答"这次指标变化对应哪
   接入时不需要改内核。
 - **单值记忆**：`UNIQUE(user_id, key)`，不支持多值 KV 与版本历史；
   `complementary` 关系按 `skip` 处理并记 Trace。
-- **`estimate_travel_time` 是启发式实现**（距离 ÷ 速度），默认距离 12km、**不是实时路况**。
-  它服务的是"多参数 + 跨步骤引用"的依赖链场景；离线夹具用显式路线表覆盖（320 分钟），
-  所以评测指标不受影响。但直接用 CLI 问真实城市对时它会给出不可信的量级——
-  实测中模型**自己察觉并拒绝了**这个结果（回答里说明"工具返回约 16 分钟，与常识不符，
-  不建议采信"）。**这不该被当作设计优点**：正常情况应该接地图 API 或提供距离表，
-  而不是依赖模型兜住工具的胡说。
+- **出行耗时有"真实/估算"两种数据源，由配置决定**：配了 `AMAP_API_KEY` → 高德**真实路径规划**
+  （`source: amap-driving` / `amap-transit`，结果含距离与解析出的规范地名）；未配置 → 退化为
+  启发式估算（距离 ÷ 速度，默认距离 12km，`source: heuristic`）。**估算值不可信**——
+  实测"重庆→成都"会算成 16 分钟，模型自己察觉并拒绝了它。这不该算设计优点：
+  静态实现就该把数据来源标出来，让调用方判断。
+- **高德地名解析有歧义，所以做了两层解析**：地理编码把「解放碑」的首条给到四川广元的住宅区、
+  把「江北机场」解析到宁波江北区；因此实现改为 **POI 搜索优先、地理编码兜底**
+  （实测「解放碑步行街」「重庆江北国际机场」都能正确对上），并把解析结果放进
+  `origin_resolved` / `destination_resolved` 供核对。提问时带上城市（"重庆 解放碑"）更稳。
+- **步行/骑行有距离上限**：高德返回 `OVER_DIRECTION_RANGE` 时映射为 `not_found`（不重试），
+  与真正的服务故障（`unavailable`，可重试）区分开。
 - **LLM-as-Judge 的局限**：与作答复用同一客户端（仅 prompt 独立），判定偏宽松；
   `Task Success Rate` 只统计裁判成功的样本。实测 15 条里有 5 条会在轮间翻转
   （其中 2 条与记忆取值直接相关），因此轮间摆动仍可达 20pt——**只能看多轮均值**，

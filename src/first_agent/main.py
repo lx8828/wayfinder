@@ -133,6 +133,7 @@ def _run_chat(args: argparse.Namespace) -> int:
     from first_agent.memory.store import MemoryStore
     from first_agent.memory.summarizer import SessionSummarizer
     from first_agent.providers import (
+        AmapTravelProvider,
         HeuristicTravelProvider,
         LlmDateTimeProvider,
         LocalCalendarProvider,
@@ -169,7 +170,17 @@ def _run_chat(args: argparse.Namespace) -> int:
     registry = ToolRegistry()
     registry.register(make_time_tool())
     registry.register(make_resolve_datetime_tool(LlmDateTimeProvider(client, tracer=tracer)))
-    registry.register(make_travel_time_tool(HeuristicTravelProvider()))
+    # 配置了 AMAP_API_KEY 就走**真实路径规划**；否则退化为确定性启发式
+    # （两种实现的 source 字段不同，模型与用户都能看出数据是哪来的）
+    amap_key = os.getenv("AMAP_API_KEY")
+    if amap_key:
+        registry.register(
+            make_travel_time_tool(
+                AmapTravelProvider(api_key=amap_key, base_url=os.getenv("AMAP_BASE_URL"))
+            )
+        )
+    else:
+        registry.register(make_travel_time_tool(HeuristicTravelProvider()))
     registry.register(make_calendar_tool(LocalCalendarProvider(os.getenv("CALENDAR_PATH", "var/calendar.json"))))
     if os.getenv("QWEATHER_API_KEY"):
         registry.register(

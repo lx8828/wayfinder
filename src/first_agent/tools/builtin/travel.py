@@ -95,6 +95,15 @@ class TravelTimeResult(BaseModel):
     destination: str
     mode: str
     duration_minutes: int
+    # 真实路径规划会给出距离；启发式估算没有 → 允许缺省
+    distance_km: float | None = None
+    # 真实 provider 解析出的规范地名（"江北机场" → "重庆江北国际机场"）。
+    # 地名歧义是真实存在的问题（实测地理编码会把"江北机场"解析到别的省份），
+    # 把解析结果交出来，回答才可核对。
+    origin_resolved: str | None = None
+    destination_resolved: str | None = None
+    # 数据来自哪里：``amap-driving`` / ``amap-transit`` … 或 ``heuristic`` / ``fake``。
+    # 模型能据此判断该不该采信（实测它会主动质疑不合理的估算值）。
     source: str
 
 
@@ -104,11 +113,13 @@ def make_travel_time_tool(provider: TravelProvider) -> ToolSpec:
 
     return ToolSpec(
         name="estimate_travel_time",
-        description="估算两地之间某种出行方式的耗时（分钟）",
+        description="查询两地之间某种出行方式的耗时（分钟）",
         input_model=TravelTimeInput,
         output_model=TravelTimeResult,
         handler=handler,
-        timeout_s=5.0,
+        # 真实实现要 3 次 HTTP（2 次地理编码 + 1 次路径规划），5s 太紧；
+        # provider 内部单次请求超时 3s，总量留到 10s
+        timeout_s=10.0,
         max_retries=1,
         slot_bindings={
             "origin": "origin",

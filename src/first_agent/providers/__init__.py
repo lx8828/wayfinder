@@ -14,6 +14,7 @@ from first_agent.providers.base import (
     TravelProvider,
     WeatherProvider,
 )
+from first_agent.providers.amap import AmapTravelProvider
 from first_agent.providers.calendar import LocalCalendarProvider
 from first_agent.providers.datetime import LlmDateTimeProvider
 from first_agent.providers.fake import (
@@ -40,6 +41,7 @@ __all__ = [
     "QWeatherProvider",
     "LlmDateTimeProvider",
     "LocalCalendarProvider",
+    "AmapTravelProvider",
     "HeuristicTravelProvider",
     # Fake
     "FakeWeatherProvider",

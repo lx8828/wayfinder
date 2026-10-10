@@ -71,6 +71,7 @@
 | R10 | 新增 `runtime/slots.py`（`SlotExtractor`） | design 8.2 要求「提取本轮槽位」，8.3 的例子也是按槽位合并；5 节目录未列此文件 | 5 / 8.3 |
 | R11 | `ToolExecutor.execute(call, defaults=...)` 支持**会话级环境参数** | `get_calendar_events(user_id, ...)` 的 `user_id` 模型不可能知道；显式参数优先、defaults 兜底 | 11.2 / 8.2 |
 | R12 | `estimate_travel_time` 用**启发式实现**（`HeuristicTravelProvider`，距离 ÷ 速度） | 项目没有接实时路况 API；宁可给确定性实现并说明，也不假装有实时数据 | 11.5 |
+| R29 | `estimate_travel_time` 接入**高德真实路径规划**（`AmapTravelProvider`，S16）：地名解析 **POI 搜索优先、地理编码兜底**；结果带 `distance_km` 与 `origin_resolved/destination_resolved`；无 `AMAP_API_KEY` 时**退化为启发式**并用 `source` 标明数据来源 | 引入真实数据源时被两件事纠正：① 首次真实调用报 `INVALID_USER_KEY`，排查发现是**我的请求漏传 `key` 参数**（桩测试只按 URL 匹配，抓不到"参数缺失"，靠真实调用才发现）；② 地理编码把「解放碑」的首条给到四川广元的住宅区、把「江北机场」解析到宁波江北区，算出 1813 km —— **geocode 不是查 POI 的接口**，改 POI 优先后「解放碑步行街 → 重庆江北国际机场」35 分钟/30 km 符合常识 | 11.5 / 11.6 |
 | R13 | 依赖失败的步骤**跳过**（`blocked_by_dependency`）而不是让整个 Plan 崩掉 | 一步失败就整体无回答，违背「失败可恢复」原则 | 8.3 |
 | R14 | 预算由**门面**创建并贯穿整轮；熔断时补齐 `tool` 消息；降级成功时清空 `error`；预算耗尽跳过记忆写入 | 分别对应：引擎各自计时会漏算记忆开销 / 缺配对消息会让历史回放被真实 API 拒绝 / 成功的降级会被评测误判为失败 | 8.2 / 14.1 |
 | R15 | 降级文案按「毫秒」如实显示小于 1 秒的预算 | `--budget-ms 1` 曾显示成「已达 1 秒」，与实际严重不符 | 14.1 |
@@ -267,6 +268,7 @@ src/first_agent/
 │   ├── weather.py         # ✅ QWeatherProvider（实况 + 3 天预报）
 │   ├── datetime.py        # ✅ LlmDateTimeProvider（自然语言时间 → 具体日期）
 │   ├── travel.py          # ✅ HeuristicTravelProvider（启发式耗时，无实时路况）
+│   ├── amap.py            # ✅ AmapTravelProvider（高德真实路径规划：POI 解析 + 驾车/步行/骑行/公交）
 │   └── calendar.py        # ✅ LocalCalendarProvider（本地 JSON 日程）
 ├── tools/
 │   ├── registry.py        # ✅ 显式注册表
@@ -830,7 +832,7 @@ class CalendarResult(BaseModel):
 | `get_current_time` | `timezone` | `TimeResult` | 单参数、确定性；时钟可注入 | ✅ S3 |
 | `get_weather` | `city, date?` | `WeatherResult` | 外部依赖（当天实况 / 未来 3 天预报），可失败 | ✅ S3 |
 | `resolve_datetime` | `expression, timezone` | `ResolvedTimeResult` | 处理“明天下午”；**结果含 `date` 字段供 `$steps.<id>.date` 引用** | ✅ S6a |
-| `estimate_travel_time` | `origin, destination, mode` | `TravelTimeResult` | 多参数、可形成依赖；启发式实现（无实时路况） | ✅ S6a |
+| `estimate_travel_time` | `origin, destination, mode` | `TravelTimeResult` | 多参数、可形成依赖；真实实现为高德路径规划（`AmapTravelProvider`），未配 Key 时退化启发式，`source` 标明来源 | ✅ S6a / S16 |
 | `get_calendar_events` | `user_id, date` | `CalendarResult` | 本地 JSON 数据；`user_id` 由会话**环境默认值**注入 | ✅ S6a |
 
 ### 11.6 地点解析
@@ -1424,6 +1426,14 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 | 出行方式别名归一化（驾车/打车/高铁…） | `tests/test_builtin_tools.py::test_travel_tool_normalizes_common_mode_aliases` | ✅ |
 | 无法识别的方式给出可选值 | `tests/test_builtin_tools.py::test_travel_tool_rejects_unknown_mode_with_legal_values` | ✅ |
 | 工具枚举与 provider 支持集一致 | `tests/test_builtin_tools.py::test_tool_mode_enum_matches_provider_supported_modes` | ✅ |
+| 高德：每个请求都带 key（回归，曾漏传致 `INVALID_USER_KEY`） | `tests/test_amap_provider.py::test_every_request_carries_the_api_key` | ✅ |
+| 高德：POI 搜索优先于地理编码 | `tests/test_amap_provider.py::test_poi_search_is_used_before_geocoding` | ✅ |
+| 高德：POI 无结果时回退地理编码 | `tests/test_amap_provider.py::test_geocoding_is_the_fallback_when_poi_is_empty` | ✅ |
+| 高德：暴露解析出的规范地名供核对 | `tests/test_amap_provider.py::test_resolved_names_are_returned_for_verification` | ✅ |
+| 高德：步行/骑行超限算 `not_found` 而非故障 | `tests/test_amap_provider.py::test_out_of_range_route_is_not_found_not_unavailable` | ✅ |
+| 高德：v4（骑行）响应用 `errcode` 解析 | `tests/test_amap_provider.py::test_bicycling_uses_v4_envelope` | ✅ |
+| 高德：公交方案带上起终点 adcode | `tests/test_amap_provider.py::test_public_transport_uses_transit_with_adcodes` | ✅ |
+| 高德：错误码翻译成可照做的提示 | `tests/test_amap_provider.py::test_amap_error_info_becomes_actionable_message` | ✅ |
 | 非 UTF-8 重定向输出不崩（先证明不修必崩） | `tests/test_cli_encoding.py::test_configure_stdio_survives_non_utf8_stdout` | ✅ |
 | 不支持 `reconfigure` 的流也不抛错 | `tests/test_cli_encoding.py::test_configure_stdio_handles_streams_without_reconfigure` | ✅ |
 | 跨会话记忆恢复 | `tests/test_memory_store.py` + `tests/test_runtime_engine.py` | ✅（评测用例样本待 S7 扩到 30～40 条） |
