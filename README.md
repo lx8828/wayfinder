@@ -80,6 +80,7 @@ step 2  get_calendar_events {"user_id": "2744ccd10c7533bd", "date": "$steps.0.da
 ## 30 秒跑起来
 
 ```bash
+git clone https://github.com/lx8828/wayfinder.git && cd wayfinder
 uv sync
 uv run pytest                # 521 个离线测试，不需要任何 API Key
 uv run wayfinder eval      # 36 条用例 + 离线回归门禁，同样不需要 Key
