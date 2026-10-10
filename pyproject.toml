@@ -1,6 +1,6 @@
 [project]
 name = "wayfinder"
-version = "0.2.0.dev0"
+version = "2.0.0"
 description = "Weather & travel assistant on a from-scratch Tool Agent Runtime (ReAct + Plan-Execute + memory + eval gates)"
 readme = "README.md"
 authors = [
