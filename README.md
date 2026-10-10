@@ -175,7 +175,7 @@ ToolAgentRuntime（组合根）            │
 | 三工具依赖链 | 5 | | 无关问题不调用工具 | 3 |
 | 缺少参数追问 | 4 | | | |
 
-另有 `judge_cases.jsonl` 的 5 条开放式用例走 LLM-as-Judge（`--real --judge`），
+另有 `judge_cases.jsonl` 的 15 条开放式用例走 LLM-as-Judge（`--real --judge`），
 单独报告 `Task Success Rate`。
 
 ### 实测数字
@@ -201,8 +201,11 @@ ToolAgentRuntime（组合根）            │
 | Structured Output Validity Rate | 100.00（0.00） | 100.00（0.00） | 100.00（0.00） |
 | Run-to-run Consistency（结论） | 88.89% | 80.56% | 91.67% |
 | Run-to-run Consistency（工具序列） | 72.22% | 77.78% | 69.44% |
-| Task Success Rate（judge，n=5） | 73.33（80/60/80） | 73.33（60/80/80） | — |
+| Task Success Rate（judge） | 73.33（80/60/80，n=5） | 73.33（60/80/80，n=5） | 82.22（93.33/73.33/80.00，n=15） |
 
+> judge 样本在 S15 由 5 条扩到 15 条：**同批内**原 5 条子集为 `[80, 60, 60] → 66.67`、
+> 全 15 条为 `[93.33, 73.33, 80.00] → 82.22`——扩样改变了「测什么」，
+> **两个均值不可直接比**，可比的是粒度（见下）。
 > 批次 A/B 是断言修订**之前**的口径，批次 C 是**之后**（含工具契约收紧）。
 > **S14 之后的当前值见上方「针对任务成功率的三条改进」表**（本表保留 A/B/C 作为口径演进记录）。
 > 三批之间的差异属正常波动（同批内摆动最大 37.5pt），**不要跨批比较单个数字**；
@@ -223,8 +226,16 @@ ToolAgentRuntime（组合根）            │
 - **端到端要一起读两个数**：`Plan Validity Rate` 61.90（约 38% 的 plan 运行有结构性缺陷）→
   叠加「答案通过断言」后 `Plan Success Rate` 只剩 26.19。这个落差主要来自**严格子串断言**
   （`Assertion Pass Rate` 53.33），而不是答案不正确——开放式用例的 judge 通过率是 73.33。
-- **要谨慎引用**：judge 只有 5 条用例太小，**同一用例的裁判结论会翻转**（实测出现
-  通过/不通过/通过），单轮 `Task Success Rate` 不可当结论，只能用多轮均值。
+- **要谨慎引用**：单轮 `Task Success Rate` 不可当结论，**同一用例的裁判结论会翻转**
+  （实测出现通过/不通过/通过），只能看多轮均值。S15 把 judge 样本从 5 条扩到 15 条：
+  单条用例的权重由 **20pt 降到 6.7pt**（`100/N`），样本量由测试钉住
+  （`test_judge_case_set_is_large_enough_for_stable_rates`）。
+- **扩样降低了粒度，但没消掉摆动**（3 轮实测，同一批 36+15 条）：
+  15 条里 **5 条**在轮间翻转（`judge_park_afternoon`、`judge_missing_city`、
+  `judge_memory_city`、`judge_memory_overrides_old`、`judge_schedule_vs_travel`，记忆族占多数），
+  所以轮间摆动仍是 20pt——但现在是**3 条用例**共同造成、且**可逐条点名**，
+  而不是过去"1 条翻转 = 20pt"的无从归因。CLI 摘要会把单条权重与摆动直接打出来，
+  均值也只应连摆动一起读。
 - **约一半用例未通过**（每轮 17～20/36），原因分三类、不能都算模型差：夹具/断言写死了
   理想模型的措辞（如追问期望出现 slot 名 `destination`，真模型用中文回答）；模型给出合理的
   不同分解；以及确有漏答。**所以离线段是门禁（衡量 Runtime），真 LLM 段是诊断
@@ -371,7 +382,7 @@ src/first_agent/
 ├── memory/      # extractor / adjudicator / service / summarizer / store / migrate
 ├── evals/       # cases.jsonl、judge_cases.jsonl、offline/live/suite/judge.py、baseline*/current*/diff*/repeats_live.json
 └── main.py      # CLI：chat / eval / memory / trace
-tests/           # 410+ 个离线测试
+tests/           # 485 个离线测试
 archive/         # v1 归档快照（独立 venv，可单独运行）
 docs/design.md   # 设计文档（含 R1–R18 实现偏差登记与里程碑）
 ```

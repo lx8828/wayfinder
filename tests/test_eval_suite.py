@@ -373,9 +373,39 @@ def test_run_repeated_rejects_zero_repeats():
 def test_judge_cases_are_loaded_and_have_criteria():
     cases = judge_mod.load_judge_cases(JUDGE_CASES_PATH)
 
-    assert len(cases) == 5
+    assert len(cases) == 15
     assert all(case.criteria.strip() for case in cases)
-    assert len({case.case_id for case in cases}) == 5
+    assert len({case.case_id for case in cases}) == 15
+
+
+def test_judge_case_set_is_large_enough_for_stable_rates():
+    """单条用例的权重 = 100/N 个百分点（S15）。
+
+    judge 只有 5 条时，一条用例翻转就是 **20pt** 的差距，读起来像"能力剧变"，
+    实际只是裁判抖动。样本量必须够大，让单条用例的权重落到可忽略的量级。
+    """
+
+    cases = judge_mod.load_judge_cases(JUDGE_CASES_PATH)
+    per_case = 100 / len(cases)
+
+    assert len(cases) >= 15, f"judge 样本过少：{len(cases)} 条"
+    assert per_case <= 7, f"单条用例权重 {per_case:.1f}pt 过大"
+
+
+def test_judge_cases_cover_both_modes_and_key_scenarios():
+    """覆盖面也要钉住：只堆同类用例，会得到"很稳但不说明问题"的指标。"""
+
+    cases = judge_mod.load_judge_cases(JUDGE_CASES_PATH)
+    modes = {case.mode for case in cases}
+    asserted = " ".join(case.criteria for case in cases)
+
+    assert modes == {"react", "plan"}
+    # 记忆（有已知居住地 / 记忆被本轮覆盖）
+    assert sum("居住地" in case.criteria for case in cases) >= 2
+    # 失败诚实性与能力边界
+    assert "不可用" in asserted and "订票" in asserted
+    # 多城市对比
+    assert any("重庆" in case.criteria and "成都" in case.criteria for case in cases)
 
 
 def test_readme_numbers_match_the_real_case_files():
@@ -391,6 +421,23 @@ def test_readme_numbers_match_the_real_case_files():
 
     assert f"{case_count} 条用例" in readme
     assert f"{judge_count} 条开放式用例" in readme
+
+
+def test_judge_summary_shows_case_weight_and_spread():
+    """摘要必须给出单条用例权重与轮间摆动，否则单轮会被读成结论。"""
+
+    line = judge_mod.judge_summary([93.33, 73.33, 80.0], 15)
+
+    assert "82.22" in line  # 均值
+    assert "6.67pt" in line  # 单条用例权重 = 100/15
+    assert "20.0pt" in line  # 轮间摆动
+    assert "读均值" in line
+
+
+def test_judge_summary_handles_no_valid_samples():
+    assert "无有效样本" in judge_mod.judge_summary([None, None], 15)
+    # 单轮时不提摆动（没有可比的轮次）
+    assert "摆动" not in judge_mod.judge_summary([80.0], 15)
 
 
 def test_judge_cases_reject_duplicate_ids(tmp_path):

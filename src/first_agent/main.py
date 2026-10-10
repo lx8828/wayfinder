@@ -330,9 +330,9 @@ def _run_eval(args: argparse.Namespace) -> int:
                 print(judge_mod.format_judge_report(judged))
         scored = [rate for rate in rates if rate is not None]
         if scored:
-            mean_rate = round(sum(scored) / len(scored), 2)
-            run.metrics["Task Success Rate"] = mean_rate
-            print(f"[first-agent] judge 每轮：{rates} → 均值 {mean_rate}")
+            run.metrics["Task Success Rate"] = round(sum(scored) / len(scored), 2)
+        # 摘要里必须显示单条用例权重与轮间摆动：否则一次抖动会被读成能力剧变
+        print(judge_mod.judge_summary(rates, len(judge_cases)))
         if repeats is not None:
             repeats.judge_rates = rates
 

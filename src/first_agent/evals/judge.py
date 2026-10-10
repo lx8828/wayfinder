@@ -180,6 +180,26 @@ def task_success_rate(outcomes: Sequence[JudgeOutcome]) -> float | None:
     return round(100.0 * sum(item.passed for item in judged) / len(judged), 2)
 
 
+def judge_summary(rates: Sequence[float | None], case_count: int) -> str:
+    """judge 摘要：把**单条用例权重**与**轮间摆动**摆在均值旁边（S15）。
+
+    只报均值会让人把一次抖动读成"能力剧变"：5 条用例时**一条翻转就是 20pt**。
+    因此摘要必须同时给出：均值、单条用例权重（``100/N``）、以及多轮之间的摆动。
+    """
+
+    scored = [rate for rate in rates if rate is not None]
+    if not scored:
+        return "[first-agent] judge 无有效样本（裁判全部失败，不计入分母）"
+
+    mean_rate = round(sum(scored) / len(scored), 2)
+    parts = [f"每轮 {scored} → 均值 {mean_rate}"]
+    parts.append(f"单条用例权重 {round(100 / case_count, 2)}pt（{case_count} 条）")
+    if len(scored) > 1:
+        parts.append(f"轮间摆动 {round(max(scored) - min(scored), 2)}pt（{len(scored)} 轮）")
+        parts.append("读均值，不要读单轮")
+    return "[first-agent] judge " + "；".join(parts)
+
+
 def format_judge_report(outcomes: Sequence[JudgeOutcome]) -> str:
     lines = ["| 用例 | 判定 | 理由 |", "|---|---|---|"]
     for item in outcomes:
