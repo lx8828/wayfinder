@@ -4,10 +4,10 @@
 - 仓库：`first-agent`（本文档位于 `docs/design.md`，随代码一同版本化）
 - 版本：v0.4
 - 日期：2026-10-10
-- 状态：Proposed（S0–S15 已实现，见 0.1）
+- 状态：Proposed（S0–S16 已实现，见 0.1）
 - 阅读须知（术语）：本文档是**当前实现**的设计记录。文中出现的 **`v2`** 即当前这套实现，
   **`v1`** 指 `archive/` 里的早期原型快照（**与主线代码和测试无关，可忽略**）；
-  **S0–S15** 是开发里程碑编号，逐条列在 0.1。
+  **S0–S16** 是开发里程碑编号，逐条列在 0.1。
 - 目标：围绕 Agent 编排、原生工具调用、短期/长期记忆与离线评测，把出行助手从功能 Demo
   做成**可测试、可观测、可回归**的 Agent Runtime
 
@@ -837,7 +837,7 @@ class CalendarResult(BaseModel):
 | `get_current_time` | `timezone` | `TimeResult` | 单参数、确定性；时钟可注入 | ✅ S3 |
 | `get_weather` | `city, date?` | `WeatherResult` | 外部依赖（当天实况 / 未来 3 天预报），可失败 | ✅ S3 |
 | `resolve_datetime` | `expression, timezone` | `ResolvedTimeResult` | 处理“明天下午”；**结果含 `date` 字段供 `$steps.<id>.date` 引用** | ✅ S6a |
-| `estimate_travel_time` | `origin, destination, mode` | `TravelTimeResult` | 多参数、可形成依赖；真实实现为高德路径规划（`AmapTravelProvider`），未配 Key 时退化启发式，`source` 标明来源 | ✅ S6a / S16 |
+| `estimate_travel_time` | `origin, destination, mode` | `TravelTimeResult` | 多参数、可形成依赖；真实实现为高德路径规划（`AmapTravelProvider`），未配 Key 时退化启发式，`source` 标明来源；**地名无法唯一确定时抛 `ambiguous_place` 触发追问**（R30） | ✅ S6a / S16 |
 | `get_calendar_events` | `user_id, date` | `CalendarResult` | 本地 JSON 数据；`user_id` 由会话**环境默认值**注入 | ✅ S6a |
 
 ### 11.6 地点解析
@@ -1539,6 +1539,9 @@ v2 只建立在 `first-agent/`。
 > 出行方式契约与别名（R28）。真实 3 轮：`Plan Success Rate` 23.81 → **42.86**、
 > `Assertion Pass Rate` 58.89 → **71.11**、`Extra Tool Call Rate` 7.79 → **0.93**。
 > S15 把 judge 样本扩到 15 条（单条权重 20pt → 6.7pt），并在摘要里显示权重与轮间摆动。
+> S16 把出行耗时从启发式换成**高德真实路径规划**（R29），并确立"**地名不确定就追问**"
+> 而不是猜或提示（R30）；两处判断都是被真实调用纠正的（漏传 `key`、"地理编码兜底给出
+> 自信的错误答案"），见 19 節第 9 条。
 > 之前的**S9/S10/S11 也是复查补漏**：
 > S9 发现 10.1/10.3 的摘要生成一直未接线（README 却写成「三层记忆」），故补齐实现并修掉窗口
 > 双重裁剪（R20）；S10 落地 `--repeat` 与 `Run-to-run Consistency`（R21），真实跑 6 次填上
@@ -1741,6 +1744,18 @@ LLM-as-Judge（`--judge`）、元数据落盘（commit / model / prompt / tool s
    均值必须连摆动一起读（CLI 摘要会把两者都打出来）。
    同批对比：原 5 条子集 `[80, 60, 60] → 66.67`，全 15 条 `[93.33, 73.33, 80.00] → 82.22`
    （样本不同，两个均值不可直接比）。
+
+9. **（S16 真实地图接入）两次"以为是别人错、其实是我错"**：
+   接高德时第一次真实调用回 `INVALID_USER_KEY`，我一度判断是 Key 的类型或实名认证问题；
+   做了一轮跨接口诊断（geo / weather / ip / direction 四个端点全部 `status=1`）才定位到
+   **是我的请求漏传 `key` 参数**——桩测试只按 URL 匹配，抓不到"参数缺失"，
+   **只有真实调用能发现**。第二处是地名解析：`人民路` 在 POI 搜索里无结果，
+   而**地理编码兜底会挑一个"道路级"的随意城市**（陕西商洛，算出 **722 公里 / 9 小时 26 分**），
+   把"信息不够具体"变成**自信的错误答案**；`火车站` 更离谱（甘肃陇南徽县「火站村」）。
+   据此**删掉地理编码兜底**、改为「**解析不到就追问用户**」（R30）：plan 模式由引擎转
+   `need_info` 并指出该补哪个槽位、同时停止执行后续步骤；react 模式靠可操作的错误文案
+   驱动模型追问（实测模型还会主动给候选站点）。真实验收：`从人民路到观音桥开车要多久？`
+   → 追问「请补充所在城市（例如「重庆人民路」）」，补一句后 **13 分钟 / 4.2 公里** 走通。
 
 另外，真实段每轮有 17～20/36 条用例未通过。**必须分类归因，不能都算模型差**：
 夹具/断言写死了理想模型的措辞（追问用例期望出现 slot 名 `destination`，真模型用中文回答）、
