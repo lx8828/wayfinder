@@ -18,6 +18,7 @@ from typing import Any
 from first_agent.evals.case import (
     EvalCase,
     arguments_match,
+    assertion_label,
     evaluate_assertion,
     memory_delta_matches,
     precedence_matches,
@@ -45,8 +46,11 @@ class RunOutcome:
     plan_valid: bool | None = None
     # 执行失败的调用（含被依赖失败阻塞的步骤），供「工具必须真的成功」这一判定使用
     tool_errors: list[dict[str, Any]] = field(default_factory=list)
-    # 成功调用的观测数据：裁判需要它才能判断「回答里的数字是不是编造的」
+    # 成功调用的观测数据：裁判需要它才能判断「回答里的数字是不是编造的」，
+    # 断言也需要它来做**结构化检查**（关键实体/数值/日期的正确来源）
     observations: list[dict[str, Any]] = field(default_factory=list)
+    # 引擎结构化给出的待补槽位（追问类用例断言这里，而不是中文回答里的英文 slot 名）
+    need_info: list[str] = field(default_factory=list)
 
 
 Engine = Callable[[EvalCase], RunOutcome]
@@ -60,6 +64,8 @@ class CaseCheck:
     outcome: RunOutcome
     checks: dict[str, bool | None] = field(default_factory=dict)
     assertion_results: list[bool] = field(default_factory=list)
+    # 失败断言的可读标签（失败报告据此定位「尺子是不是又太硬」）
+    assertion_failures: list[str] = field(default_factory=list)
     error: str | None = None
 
     @property
@@ -158,7 +164,12 @@ def run_case(case: EvalCase, engine: Engine) -> CaseCheck:
         "memory_delta": memory_delta_matches(case, outcome.memory_actions),
         "tool_ok": tool_calls_ok(case, outcome),
     }
-    assertion_results = [evaluate_assertion(a, outcome.answer) for a in case.assertions]
+    assertion_results = [evaluate_assertion(a, outcome) for a in case.assertions]
+    assertion_failures = [
+        assertion_label(assertion)
+        for assertion, ok in zip(case.assertions, assertion_results)
+        if not ok
+    ]
     checks["plan_validity"] = plan_validity_ok(case, outcome, checks)
     checks["plan_success"] = plan_success_ok(
         case, checks, all(assertion_results) if assertion_results else None
@@ -168,6 +179,7 @@ def run_case(case: EvalCase, engine: Engine) -> CaseCheck:
         outcome=outcome,
         checks=checks,
         assertion_results=assertion_results,
+        assertion_failures=assertion_failures,
         error=outcome.error,
     )
 

@@ -111,18 +111,37 @@ def _react_calls(case: EvalCase) -> list[tuple[str, dict[str, Any]]]:
 
 
 def _default_answer(case: EvalCase) -> str:
-    """缺省最终回答：只拼接 ``contains`` 断言值，保证它们必然可满足。
+    """缺省最终回答：把**答案层**断言里可满足的值拼进去。
 
-    注意**不能**把 ``not_contains`` 的值拼进去——那会让自己必然失败。
-    需要 ``not_contains`` 的用例必须显式声明 ``final_answer``。
+    三条规则：
+
+    - 只处理 ``target == "final_answer"`` 的断言——观测 / 槽位 / 错误层的断言与回答文本
+      无关，拼进来只会制造噪音（也正因如此，``项目评审会`` 这种断言不该写在回答上）。
+    - ``any_of`` 取第一个候选；``equals`` 直接作为整句回答。
+    - **不能**把 ``not_contains`` 的值拼进去——那会让自己必然失败；``regex`` 也无法反推文本，
+      这两种情况需要用例显式声明 ``final_answer``。
     """
 
-    values = [
-        assertion.value
-        for assertion in case.assertions
-        if assertion.value and assertion.type == "contains"
-    ]
-    return "离线夹具回答：" + "；".join(values) if values else "离线夹具回答。"
+    equals = next(
+        (
+            assertion.value
+            for assertion in case.assertions
+            if assertion.target == "final_answer" and assertion.type == "equals"
+        ),
+        None,
+    )
+    if equals is not None:
+        return equals
+
+    parts: list[str] = []
+    for assertion in case.assertions:
+        if assertion.target != "final_answer":
+            continue
+        if assertion.type == "any_of" and assertion.values:
+            parts.append(assertion.values[0])
+        elif assertion.type == "contains" and assertion.value:
+            parts.append(assertion.value)
+    return "离线夹具回答：" + "；".join(parts) if parts else "离线夹具回答。"
 
 
 def _answer(case: EvalCase, fixture: OfflineFixture) -> str:

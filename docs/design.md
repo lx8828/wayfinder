@@ -4,7 +4,7 @@
 - 仓库：`first-agent`（本文档位于 `docs/design.md`，随代码一同版本化）
 - 版本：v0.4
 - 日期：2026-10-10
-- 状态：Proposed（S0–S12 已实现，见 0.1）
+- 状态：Proposed（S0–S13 已实现，见 0.1）
 - 术语：本文档版本为 v0.4；产品目标版本称 **v2**；旧手写实现称 **v1**（归入 `archive/handwritten_v1/`）
 - 目标：围绕 Agent 编排、原生工具调用、短期/长期记忆和离线评测，把项目二从功能 Demo 升级为可测试、可观测、可回归的 Agent Runtime
 
@@ -76,6 +76,8 @@
 | R18 | LLM-as-Judge 必须同时看到**工具观测数据** | 不给观测，裁判会把回答里的真实数值误判为「编造事实」（首次真实运行实测） | 16.3 |
 | R19 | `TRACE_MODE` / `FIRST_AGENT_TRACE_DIR` 真正接入 CLI；新增 `core/inspect.py` 承载 `memory` / `trace` 的数据层 | 前两个环境变量文档写了但代码从未读取（文档与实现不符）；运维视图放在 CLI 里无法单测 | 15 / 5 |
 | R21 | 新增 `--repeat N` 并落地 `Run-to-run Consistency`（结论 + 工具序列两个口径）；硬失败按「任意一轮失败」去重 | 设计 14.4 要求「真 LLM 跑 3 次观察稳定性」，但此前只能靠人工看日志；单轮数字无法区分「模型不稳」和「测试不稳」 | 14.4 / 16.5 |
+| R24 | 断言按**证据层**分层（`observation` / `need_info` / `tool_error` / `final_answer`），并新增 `any_of` 与 `regex`；失败报告必须指明**是哪一条**断言失败 | 原实现把事实断言全写在回答文本上（要求中文回答出现英文槽位名、要求固定文案），业务正确但换说法的回答被判失败——**度量的是措辞而不是能力**。分层后同一事实按"工具返回的数据"判定，措辞交给 judge | 16.2 / 16.3 |
+| R25 | 工具契约收紧：`estimate_travel_time.mode` 改枚举、`CalendarInput.date` 加 ISO 格式 `pattern` | 描述里写"walk/bike/…"等于没要求：真跑中模型传 `driving` → provider 抛 `not_found`（像"查不到路线"，实为契约违例）；日历收到非 ISO 日期 → 返回空列表 → 回答"你没有安排"，是**静默的错误答案**。收紧后变成显式 `invalid_arguments`，且 schema 会带上 `enum` / `pattern` 供模型遵循 | 11.5 / 16.2 |
 | R23 | 顺序类指标拆成四个互补维度：`Tool Set Accuracy`（召回）/ `Precedence Accuracy`（关键先后）/ `Plan Validity Rate`（计划合法性四要素）/ `Plan Success Rate`（端到端）；用例新增 `precedence` 字段 | 只用「序列完全相等」无法归因：**合法换序**与**语义顺序错误**被记成同一类失败。真 LLM 实测证明这不是理论问题：`Tool Set` 91.67 而 `Tool Sequence` 66.67，约 25pt 的"序列错误"其实是合法换序 | 16.2 / 16.6 |
 | R22 | CLI 启动时 `_configure_stdio()`：非交互输出切 UTF-8，交互控制台只放宽 `errors` | Windows 下 `first-agent eval > out.txt` / `\| Select-String` 会让 stdout 退化为 `gbk`，打印 `✅/✗/⚠` 直接 `UnicodeEncodeError`（exit 1、输出全空）；交互式控制台走 Windows 控制台 API 反而不受影响，所以只有重定向才暴露 | 15 / 19 |
 | R20 | 补齐**摘要生成**（`memory/summarizer.py`）并明确原文窗口策略 | 10.1/10.3 的摘要一直是「契约 + 表 + 读取路径就绪、写入未接线」，实际行为是"只留最近 8 轮、旧的静默丢弃"，与 README「三层记忆」的表述不符（由用户发现）；同时修掉引擎窗口与构建器窗口**双重裁剪**（引擎取 16 轮、构建器又砍回 8 轮） | 10.1 / 10.3 |
@@ -296,7 +298,7 @@ src/first_agent/
 │   └── repeats_live.json  # ✅ 真 LLM 每轮明细与一致性（--repeat，S10）
 └── main.py                # ✅ CLI（chat / eval / memory / trace）
 
-tests/                     # ✅ 445 个离线测试（无 API Key 可跑）
+tests/                     # ✅ 466 个离线测试（无 API Key 可跑）
 var/                       # ✅ 本地 SQLite 与 Trace（已 gitignore）
 
 .env.example               # ✅ 环境变量示例（不含密钥）
@@ -1106,10 +1108,30 @@ var/traces/YYYY-MM-DD.jsonl
   "expected_memory_delta": {},
   "max_steps": 5,
   "assertions": [
-    {"type": "contains", "target": "final_answer", "value": "天气"}
+    {"type": "contains", "target": "observation", "value": "项目评审会"},
+    {"type": "any_of", "values": ["评审", "会议", "安排"]}
   ]
 }
 ```
+
+**断言必须写在正确的证据层上**（S13 修订，见 R24）：
+
+| `target` | 证据来自 | 用途 | 例子 |
+|---|---|---|---|
+| `observation` | 工具**实际返回的数据** | 关键实体 / 数值 / 日期。验证「这条事实有没有被交付给模型」，与模型怎么措辞无关 | `项目评审会`、`320`、`2026-10-11` |
+| `need_info` | 引擎结构化输出的待补槽位 | 追问类用例断言槽位名，**不要求中文回答里出现英文 slot 名** | `destination` |
+| `tool_error` | 失败调用的 `error_code` | 失败与降级路径 | `unavailable`、`timeout` |
+| `final_answer` | 助手回答文本 | **只用于措辞稳定的确定性输出** | 工具直接给出的 `16:30`、`1+1=2` |
+
+匹配方式：`contains` / `not_contains` / `equals` / `any_of`（同义表达任一命中）/ `regex`（形态稳定的模式，如日期）。
+加载期即校验写法（`any_of` 必须有 `values`、`regex` 必须能编译、其余必须有 `value`）。
+
+> **反面教材（S13 之前的写法）**：要求中文回答里出现英文槽位名 `origin`、要求回答包含固定文案
+> `项目评审会`、要求固定的解释方式。结果「业务上正确但换了说法」的回答被判失败——
+> **那是尺子太硬，不是项目差**。自由文本的表现力问题交给 16.3 的 LLM-as-Judge。
+>
+> 防回退：`tests/test_assertions.py::test_case_set_has_no_brittle_answer_only_fact_assertions`
+> 要求「观测/槽位/错误层的断言数 ≥ 回答层字面断言的 **2 倍**」，改回写死措辞会让它失败。
 
 三个工具字段不可混用，按 `mode` 决定以谁为准：
 
@@ -1261,7 +1283,7 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 | Average Steps | 平均循环步数（越低越好） |
 | Average Latency | 平均单次 run 耗时（越低越好） |
 | Task Success Rate | **仅对 `judge_cases.jsonl` 的开放式用例**，按 LLM-as-Judge 判定正确的占比（只统计裁判成功的样本）；确定性用例不计入本指标（用 `assertions` 断言代替） |
-| Assertion Pass Rate | 表外附加指标：声明了 `assertions` 的用例中全部断言通过的占比（真 LLM 段波动明显，只作参考） |
+| Assertion Pass Rate | 表外附加指标：声明了 `assertions` 的用例中全部断言通过的占比。S13 起断言分层（结构化 / 实体 / 关键约束），该指标衡量的是「事实与关键约束是否命中」，**不再惩罚措辞差异**；真 LLM 段仍波动，只作参考 |
 | Run-to-run Consistency | 同一用例真 LLM 重复 N 次的**结论一致率**（`--repeat N` 实现；同时给出工具序列一致率）。实测 6 次运行：结论 80.6～88.9%、工具序列 72.2～77.8% |
 
 ---
@@ -1351,6 +1373,16 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 | 降级成功仍记「计划不合法」 | `tests/test_plan_metrics.py::test_degraded_run_is_not_counted_as_a_valid_plan` | ✅ |
 | `Plan Success Rate` 要求合法且断言通过 | `tests/test_plan_metrics.py::test_plan_success_requires_validity_and_assertions` | ✅ |
 | 只错顺序时召回不掉、先后掉 | `tests/test_plan_metrics.py::test_metrics_drop_when_precedence_is_violated_but_names_still_match` | ✅ |
+| 事实断言读观测数据（不看措辞） | `tests/test_assertions.py::test_observation_layer_reads_tool_data_not_the_answer` | ✅ |
+| 追问断言读结构化槽位 | `tests/test_assertions.py::test_need_info_layer_uses_structured_slots` | ✅ |
+| 同义表达必须通过 | `tests/test_assertions.py::test_any_of_accepts_synonymous_phrasings` | ✅ |
+| 日期可用多种格式通过 | `tests/test_assertions.py::test_regex_accepts_multiple_date_formats` | ✅ |
+| 畸形断言在加载期报错 | `tests/test_assertions.py::test_load_cases_rejects_malformed_assertions` | ✅ |
+| 用例集不得退回「写死措辞」 | `tests/test_assertions.py::test_case_set_has_no_brittle_answer_only_fact_assertions` | ✅ |
+| 失败报告指出具体失败断言 | `tests/test_eval_suite.py::test_failure_report_names_the_failing_assertion` | ✅ |
+| 出行方式必须落在枚举内 | `tests/test_builtin_tools.py::test_travel_tool_rejects_mode_outside_the_enum` | ✅ |
+| 枚举写进工具 schema | `tests/test_builtin_tools.py::test_travel_tool_schema_declares_mode_enum` | ✅ |
+| 非 ISO 日期被显式拒绝 | `tests/test_builtin_tools.py::test_calendar_tool_rejects_non_iso_date` | ✅ |
 | 非 UTF-8 重定向输出不崩（先证明不修必崩） | `tests/test_cli_encoding.py::test_configure_stdio_survives_non_utf8_stdout` | ✅ |
 | 不支持 `reconfigure` 的流也不抛错 | `tests/test_cli_encoding.py::test_configure_stdio_handles_streams_without_reconfigure` | ✅ |
 | 跨会话记忆恢复 | `tests/test_memory_store.py` + `tests/test_runtime_engine.py` | ✅（评测用例样本待 S7 扩到 30～40 条） |
@@ -1432,6 +1464,8 @@ v2 只建立在 `first-agent/`。
 > 实际执行被拆成 S0～S12 若干小步，每步一个 commit + 一次全量测试。**S9～S12 都是复查补漏**：
 > S12 按「顺序类指标不该只有一个」把 `Tool Set / Precedence / Plan Validity / Plan Success`
 > 拆出来（R23），真实数据证明拆分有效。
+> S13 把断言从「回答措辞」重写到**证据层**并加失败断言诊断（R24），
+> 顺带用新尺子暴露并修掉两个工具契约缺陷（R25）。
 > 之前的**S9/S10/S11 也是复查补漏**：
 > S9 发现 10.1/10.3 的摘要生成一直未接线（README 却写成「三层记忆」），故补齐实现并修掉窗口
 > 双重裁剪（R20）；S10 落地 `--repeat` 与 `Run-to-run Consistency`（R21），真实跑 6 次填上
@@ -1591,6 +1625,15 @@ LLM-as-Judge（`--judge`）、元数据落盘（commit / model / prompt / tool s
    （多余调用 / 工具失败 / 重规划后仍非法）；再叠加「答案通过断言」后只剩约 1/4。
    这个落差主要由**严格子串断言**造成（`Assertion Pass Rate` 53.33），
    而非答案不正确——开放式用例的 judge 通过率是 73.33。**两者必须一起读**。
+
+6. **（S13 尺子修订）断言分层后的实测**：`Assertion Pass Rate` 从 53.3～54.4 升到 **58.9**（+5pt）。
+   提升有限，且**已用失败断言诊断逐条核对**：残留失败全部是真实问题——
+   模型没调工具（`plan_single_time_008`/`013`/`015` 零工具调用）、
+   自己猜日期导致日历查空（`017` 未调 `resolve_datetime`）、
+   该追问却不追问（`020`/`021`/`022` 未声明 `need_info`）、
+   以及**契约给了可恢复错误却不重试**（`016`/`018` 收到 `invalid_arguments` 后未改 `mode`）。
+   结论：这项指标低**主要是模型行为问题**，但原来的尺子无法区分「措辞不同」与「事实没到位」——
+   现在失败报告会写明 `observation:contains(项目评审会)` 这类具体断言，可逐条归因。
 
 另外，真实段每轮有 17～20/36 条用例未通过。**必须分类归因，不能都算模型差**：
 夹具/断言写死了理想模型的措辞（追问用例期望出现 slot 名 `destination`，真模型用中文回答）、

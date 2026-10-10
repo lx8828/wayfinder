@@ -1,12 +1,21 @@
-"""内置工具测试：时间与天气（design.md 11.5）。"""
+"""内置工具测试：时间、天气、出行耗时与日程（design.md 11.5）。"""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from first_agent.providers import FakeWeatherProvider
+from first_agent.providers import (
+    FakeCalendarProvider,
+    FakeTravelProvider,
+    FakeWeatherProvider,
+)
 from first_agent.schemas.tool import ToolCall, ToolSpec
-from first_agent.tools.builtin import make_time_tool, make_weather_tool
+from first_agent.tools.builtin import (
+    make_calendar_tool,
+    make_time_tool,
+    make_travel_time_tool,
+    make_weather_tool,
+)
 from first_agent.tools.executor import ToolExecutor
 from first_agent.tools.registry import ToolRegistry
 
@@ -83,3 +92,73 @@ def test_weather_tool_schema_marks_date_optional():
 
     assert params["required"] == ["city"]
     assert set(params["properties"]) == {"city", "date"}
+
+
+# -- 出行耗时：mode 必须是枚举契约（S13 真实运行暴露） --------------------
+
+
+def test_travel_tool_schema_declares_mode_enum():
+    """约束要写进 schema：只在描述里列举取值，模型看不到、也拦不住。"""
+
+    spec = make_travel_time_tool(FakeTravelProvider())
+    schema = spec.to_function_schema()["function"]["parameters"]
+
+    assert schema["properties"]["mode"]["enum"] == [
+        "walk",
+        "bike",
+        "bus",
+        "subway",
+        "car",
+        "taxi",
+    ]
+
+
+def test_travel_tool_rejects_mode_outside_the_enum():
+    """真实运行里模型传了 ``driving``，provider 抛 not_found——看起来像"查不到路线"，
+    实际是契约违例。现在必须变成显式的 ``invalid_arguments``，并告诉模型合法取值。
+    """
+
+    result = run_tool(
+        make_travel_time_tool(FakeTravelProvider()),
+        {"origin": "重庆", "destination": "成都", "mode": "driving"},
+    )
+
+    assert result.ok is False
+    assert result.error_code == "invalid_arguments"
+    assert "car" in (result.error_message or "")
+
+
+def test_travel_tool_accepts_declared_mode():
+    provider = FakeTravelProvider(routes={("重庆", "成都", "car"): 320})
+    result = run_tool(
+        make_travel_time_tool(provider),
+        {"origin": "重庆", "destination": "成都", "mode": "car"},
+    )
+
+    assert result.ok is True
+    assert result.data["duration_minutes"] == 320
+
+
+# -- 日程：日期格式必须是契约（否则会变成静默的错误答案） ----------------
+
+
+def test_calendar_tool_rejects_non_iso_date():
+    """非 ISO 日期曾经 → provider 查不到 → 空列表 → 回答"你没有安排"。
+
+    这是**静默的错误答案**，比报错更危险；现在必须显式拒绝。
+    """
+
+    provider = FakeCalendarProvider(events={"u1": {"2026-10-10": ["09:00 晨会"]}})
+    result = run_tool(make_calendar_tool(provider), {"user_id": "u1", "date": "今天"})
+
+    assert result.ok is False
+    assert result.error_code == "invalid_arguments"
+    assert "pattern" in (result.error_message or "")
+
+
+def test_calendar_tool_accepts_iso_date():
+    provider = FakeCalendarProvider(events={"u1": {"2026-10-10": ["09:00 晨会"]}})
+    result = run_tool(make_calendar_tool(provider), {"user_id": "u1", "date": "2026-10-10"})
+
+    assert result.ok is True
+    assert result.data["events"] == ["09:00 晨会"]

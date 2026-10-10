@@ -263,6 +263,33 @@ def test_failure_report_names_the_reason():
     assert "tool_set=✗" in report
 
 
+def test_failure_report_names_the_failing_assertion():
+    """失败报告必须指出**是哪一条**断言失败——否则无法区分「模型错了」与「尺子太硬」。"""
+
+    case = EvalCase(
+        case_id="assert_case",
+        mode="react",
+        input="hi",
+        expected_tool_set=["get_weather"],
+        assertions=[
+            {"type": "contains", "target": "observation", "value": "项目评审会"},
+            {"type": "any_of", "values": ["评审", "会议"]},
+        ],
+    )
+
+    def engine(_case: EvalCase) -> RunOutcome:
+        return RunOutcome(
+            answer="今天没有安排。",
+            tool_calls=["get_weather"],
+            observations=[{"tool": "get_weather", "data": {"city": "北京"}}],
+        )
+
+    report = suite.failure_report([run_case(case, engine)])
+
+    assert "observation:contains(项目评审会)" in report
+    assert "final_answer∈[评审/会议]" in report
+
+
 def test_metric_delta_direction_is_declared_for_every_metric():
     deltas = compare_metrics(
         {"Extra Tool Call Rate": 0.0, "Average Steps": 1.0}, {"Extra Tool Call Rate": 5.0, "Average Steps": 2.0}
@@ -316,6 +343,12 @@ def test_consistency_detects_flaky_cases():
                 answer="离线夹具回答：北京" if ok else "抱歉",
                 tool_calls=["get_weather"] if ok else [],
                 arguments={"get_weather": [{"city": "北京"}]} if ok else {},
+                # 断言里有关键事实落在观测层：正常分支必须真的带回数据
+                observations=(
+                    [{"tool": "get_weather", "data": {"city": "北京", "condition": "晴"}}]
+                    if ok
+                    else []
+                ),
                 steps=1,
             )
 

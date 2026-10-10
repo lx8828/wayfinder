@@ -1,30 +1,29 @@
 {
   "metadata": {
     "case_count": 0,
-    "case_set_hash": "7af1d9cc897e",
-    "generated_at": "2026-10-10T13:53:41+00:00",
-    "git_commit": "c947998",
+    "case_set_hash": "d70b65d8e944",
+    "generated_at": "2026-10-10T14:14:31+00:00",
+    "git_commit": "137aad6",
     "mode": "real",
     "model": "deepseek-chat",
     "prompt_version": "f61d6c635cb9",
     "repeat": 3,
-    "tool_schema_version": "b0438bbb98a6"
+    "tool_schema_version": "566dd76b7002"
   },
   "metrics": {
-    "Argument Accuracy": 92.98,
-    "Assertion Pass Rate": 53.33,
-    "Average Latency": 1690.1,
-    "Average Steps": 1.55,
-    "Extra Tool Call Rate": 6.7,
-    "Memory Decision Accuracy": 80.56,
-    "Plan Success Rate": 26.19,
-    "Plan Validity Rate": 61.9,
-    "Precedence Accuracy": 66.67,
-    "Run-to-run Consistency": 83.33,
+    "Argument Accuracy": 87.72,
+    "Assertion Pass Rate": 58.89,
+    "Average Latency": 1683.77,
+    "Average Steps": 1.51,
+    "Extra Tool Call Rate": 7.79,
+    "Memory Decision Accuracy": 79.63,
+    "Plan Success Rate": 23.81,
+    "Plan Validity Rate": 59.52,
+    "Precedence Accuracy": 54.17,
+    "Run-to-run Consistency": 91.67,
     "Structured Output Validity Rate": 100.0,
-    "Task Success Rate": 73.33,
-    "Tool Selection Accuracy": 92.06,
-    "Tool Sequence Accuracy": 66.67,
-    "Tool Set Accuracy": 91.67
+    "Tool Selection Accuracy": 90.48,
+    "Tool Sequence Accuracy": 62.22,
+    "Tool Set Accuracy": 88.89
   }
 }

@@ -60,6 +60,7 @@ def to_run_outcome(result: Any) -> RunOutcome:
         # PlanResult 有该字段；ReactResult 没有 → None（不判定）
         plan_valid=getattr(result, "plan_valid", None),
         tool_errors=_tool_errors(result),
+        need_info=list(getattr(result, "need_info", None) or []),
         observations=_observations(result),
     )
 

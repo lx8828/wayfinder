@@ -12,9 +12,10 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, Sequence
 
 from pydantic import BaseModel, Field
 
@@ -25,12 +26,56 @@ HARD_MAX_STEPS = 8
 EVAL_USER_PREFIX = "case:"
 
 
-class Assertion(BaseModel):
-    """对最终答案的确定性断言（开放式答案另行使用 judge）。"""
+class AssertionEvidence(Protocol):
+    """断言可以查看的**证据层**（``RunOutcome`` 满足该协议）。"""
 
-    type: Literal["contains", "not_contains", "equals"] = "contains"
-    target: str = "final_answer"
+    answer: str
+    observations: list[dict[str, Any]]
+    need_info: list[str]
+    tool_errors: list[dict[str, Any]]
+
+
+class Assertion(BaseModel):
+    """确定性断言。
+
+    ``target`` 决定**去哪里找证据**——这是本模型最重要的字段，也是「尺子不能太硬」
+    的关键：真实模型的措辞不可控，但**工具返回的数据是确定的**。因此：
+
+    - ``observation``：工具实际返回的数据。关键实体 / 数值 / 日期应断言在这里
+      （例：``项目评审会``、``320``、``2026-10-11``）——它验证的是"这条事实有没有被
+      交付给模型"，与模型怎么措辞无关。
+    - ``need_info``：引擎结构化给出的待补槽位。追问类用例断言槽位名，**不要去要求
+      中文回答里出现英文 slot 名**。
+    - ``tool_error``：失败调用的 ``error_code``。失败/降级路径断言这里。
+    - ``final_answer``：助手回答文本。**只用于措辞稳定的确定性输出**
+      （如工具直接给出的 ``16:30``），自由文本一律交给 LLM-as-Judge。
+
+    ``type`` 中 ``any_of`` 用于同义表达（中文措辞极不稳定），``regex`` 用于形态稳定的
+    模式（如日期）。
+    """
+
+    type: Literal["contains", "not_contains", "equals", "any_of", "regex"] = "contains"
+    target: Literal["final_answer", "observation", "need_info", "tool_error"] = "final_answer"
     value: str = ""
+    # type == "any_of" 时的候选表达（任一命中即通过）
+    values: list[str] = Field(default_factory=list)
+
+
+def validate_assertion(case_id: str, assertion: Assertion) -> None:
+    """加载期即校验断言写法，避免畸形夹具在跑用例时才炸掉整批。"""
+
+    if assertion.type == "any_of":
+        if not assertion.values:
+            raise ValueError(f"用例 {case_id} 的 any_of 断言缺少 values")
+        return
+    if assertion.type == "regex":
+        try:
+            re.compile(assertion.value)
+        except re.error as exc:
+            raise ValueError(f"用例 {case_id} 的 regex 断言非法：{exc}") from exc
+        return
+    if not assertion.value:
+        raise ValueError(f"用例 {case_id} 的 {assertion.type} 断言缺少 value")
 
 
 class OfflineFixture(BaseModel):
@@ -124,6 +169,8 @@ def load_cases(path: str | Path) -> list[EvalCase]:
                     f"{path} 用例 {case.case_id} 的 precedence 非法：{pair!r}"
                     "（必须是 [先, 后] 两个不同工具）"
                 )
+        for assertion in case.assertions:
+            validate_assertion(case.case_id, assertion)
     return cases
 
 
@@ -255,9 +302,56 @@ def memory_delta_matches(case: EvalCase, actions: dict[str, str]) -> bool | None
     return dict(actions) == dict(case.expected_memory_delta)
 
 
-def evaluate_assertion(assertion: Assertion, answer: str) -> bool:
+def _flatten(value: Any) -> str:
+    """把嵌套结构压成可匹配文本（数值也转成字符串）。"""
+
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key, item in value.items():
+            parts.append(str(key))
+            parts.append(_flatten(item))
+        return " ".join(parts)
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(_flatten(item) for item in value)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def assertion_label(assertion: Assertion) -> str:
+    """人类可读的断言标签——失败报告必须说清**是哪一条**断言失败。"""
+
+    if assertion.type == "any_of":
+        candidates = "/".join(assertion.values[:3])
+        return f"{assertion.target}∈[{candidates}]"
+    return f"{assertion.target}:{assertion.type}({assertion.value})"
+
+
+def evidence_text(assertion: Assertion, outcome: AssertionEvidence) -> str:
+    """按 ``target`` 选出要匹配的文本。"""
+
+    if assertion.target == "observation":
+        return " ".join(_flatten(item.get("data")) for item in outcome.observations)
+    if assertion.target == "need_info":
+        return " ".join(outcome.need_info)
+    if assertion.target == "tool_error":
+        return " ".join(
+            f"{item.get('error_code')} {item.get('error_message')}"
+            for item in outcome.tool_errors
+        )
+    return outcome.answer
+
+
+def evaluate_assertion(assertion: Assertion, outcome: AssertionEvidence) -> bool:
+    """在**指定证据层**上判定断言；自由文本不应断言在这里（交给 judge）。"""
+
+    text = evidence_text(assertion, outcome)
     if assertion.type == "contains":
-        return assertion.value in answer
+        return assertion.value in text
     if assertion.type == "not_contains":
-        return assertion.value not in answer
-    return answer == assertion.value
+        return assertion.value not in text
+    if assertion.type == "any_of":
+        return any(value in text for value in assertion.values)
+    if assertion.type == "regex":
+        return re.search(assertion.value, text) is not None
+    return text == assertion.value

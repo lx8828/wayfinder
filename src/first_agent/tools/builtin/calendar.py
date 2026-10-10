@@ -14,7 +14,10 @@ from first_agent.schemas.tool import ToolSpec
 
 class CalendarInput(BaseModel):
     user_id: str = Field(description="用户标识（通常由会话注入，无需模型提供）")
-    date: str = Field(description="日期 YYYY-MM-DD")
+    # 只写在描述里的格式要求等于没要求：S13 真实运行里模型传了非 ISO 日期，
+    # provider 查不到就返回空列表，最终变成"你明天没有安排"——**静默的错误答案**。
+    # 加上 pattern 后，格式不合法会变成显式的 invalid_arguments（且 schema 会带上 pattern）。
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$", description="日期 YYYY-MM-DD")
 
 
 class CalendarResult(BaseModel):

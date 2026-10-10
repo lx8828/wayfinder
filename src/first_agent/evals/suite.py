@@ -239,7 +239,9 @@ def failure_report(checks: Sequence[CaseCheck], *, limit: int = 12) -> str:
             if value is False:
                 reasons.append(f"{name}=✗")
         if check.assertion_results and not all(check.assertion_results):
-            reasons.append("assertions=✗")
+            # 必须说清哪一条断言失败：否则无法区分「模型错了」与「尺子太硬」
+            detail = "、".join(check.assertion_failures[:2])
+            reasons.append(f"assertions=✗[{detail}]" if detail else "assertions=✗")
         if check.outcome.tool_errors:
             codes = "、".join(
                 f"{item.get('tool')}:{item.get('error_code')}" for item in check.outcome.tool_errors
