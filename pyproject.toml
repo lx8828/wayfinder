@@ -1,7 +1,7 @@
 [project]
 name = "first-agent"
 version = "0.2.0.dev0"
-description = "Tool Agent Runtime: ReAct-style tool calling + Plan-Execute + memory + evaluation gates"
+description = "Weather & travel assistant on a from-scratch Tool Agent Runtime (ReAct + Plan-Execute + memory + eval gates)"
 readme = "README.md"
 authors = [
     { name = "lx", email = "834659376@qq.com" }
