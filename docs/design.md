@@ -4,7 +4,7 @@
 - 仓库：`first-agent`（本文档位于 `docs/design.md`，随代码一同版本化）
 - 版本：v0.4
 - 日期：2026-10-10
-- 状态：Proposed（S0–S9 已实现，见 0.1）
+- 状态：Proposed（S0–S10 已实现，见 0.1）
 - 术语：本文档版本为 v0.4；产品目标版本称 **v2**；旧手写实现称 **v1**（归入 `archive/handwritten_v1/`）
 - 目标：围绕 Agent 编排、原生工具调用、短期/长期记忆和离线评测，把项目二从功能 Demo 升级为可测试、可观测、可回归的 Agent Runtime
 
@@ -76,6 +76,7 @@
 | R18 | LLM-as-Judge 必须同时看到**工具观测数据** | 不给观测，裁判会把回答里的真实数值误判为「编造事实」（首次真实运行实测） | 16.3 |
 | R19 | `TRACE_MODE` / `FIRST_AGENT_TRACE_DIR` 真正接入 CLI；新增 `core/inspect.py` 承载 `memory` / `trace` 的数据层 | 前两个环境变量文档写了但代码从未读取（文档与实现不符）；运维视图放在 CLI 里无法单测 | 15 / 5 |
 | R21 | 新增 `--repeat N` 并落地 `Run-to-run Consistency`（结论 + 工具序列两个口径）；硬失败按「任意一轮失败」去重 | 设计 14.4 要求「真 LLM 跑 3 次观察稳定性」，但此前只能靠人工看日志；单轮数字无法区分「模型不稳」和「测试不稳」 | 14.4 / 16.5 |
+| R22 | CLI 启动时 `_configure_stdio()`：非交互输出切 UTF-8，交互控制台只放宽 `errors` | Windows 下 `first-agent eval > out.txt` / `\| Select-String` 会让 stdout 退化为 `gbk`，打印 `✅/✗/⚠` 直接 `UnicodeEncodeError`（exit 1、输出全空）；交互式控制台走 Windows 控制台 API 反而不受影响，所以只有重定向才暴露 | 15 / 19 |
 | R20 | 补齐**摘要生成**（`memory/summarizer.py`）并明确原文窗口策略 | 10.1/10.3 的摘要一直是「契约 + 表 + 读取路径就绪、写入未接线」，实际行为是"只留最近 8 轮、旧的静默丢弃"，与 README「三层记忆」的表述不符（由用户发现）；同时修掉引擎窗口与构建器窗口**双重裁剪**（引擎取 16 轮、构建器又砍回 8 轮） | 10.1 / 10.3 |
 
 **实测发现（真实冒烟，S3–S4）**：DeepSeek 在带 `tool_calls` 的响应里**有时输出 `content`（Thought）、有时不输出**——同一模型对同类问题先后返回 `content=null` 与 `content="I'll check the current weather in Beijing for you."`。这确认了方案 A（Thought 可选）是唯一稳妥的选择。另注意 **Thought 语言不受输入语言约束**（中文输入得到英文 Thought），如需统一只能在 prompt 中显式要求。
@@ -290,10 +291,11 @@ src/first_agent/
 │   ├── cases.jsonl        # ✅ 36 条用例
 │   ├── judge_cases.jsonl  # ✅ 5 条开放式用例
 │   ├── baseline.json      # ✅ 离线基线（硬门禁）
-│   └── current.json / diff.md        # ✅ 本次结果与对比
+│   ├── current.json / diff.md        # ✅ 本次结果与对比
+│   └── repeats_live.json  # ✅ 真 LLM 每轮明细与一致性（--repeat，S10）
 └── main.py                # ✅ CLI（chat / eval / memory / trace）
 
-tests/                     # ✅ 412 个离线测试（无 API Key 可跑）
+tests/                     # ✅ 421 个离线测试（无 API Key 可跑）
 var/                       # ✅ 本地 SQLite 与 Trace（已 gitignore）
 
 .env.example               # ✅ 环境变量示例（不含密钥）
@@ -1171,7 +1173,8 @@ evals/
 ├── diff.md                # 人类可读对比
 ├── baseline_live.json     # 真 LLM 基线（波动指标，只告警）
 ├── current_live.json
-└── diff_live.md
+├── diff_live.md
+└── repeats_live.json      # --repeat N 的每轮指标 / 波动 / 一致性 / 每轮裁判分数
 ```
 
 流程：
@@ -1318,6 +1321,8 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 | 预算耗尽跳过摘要 | `tests/test_session_summary.py::test_summary_is_skipped_when_budget_is_exhausted` | ✅ |
 | 重复运行给出均值与波动 | `tests/test_eval_suite.py::test_repeat_runs_average_metrics_and_report_consistency` | ✅ |
 | 跨轮不一致的用例被点名 | `tests/test_eval_suite.py::test_consistency_detects_flaky_cases` | ✅ |
+| 非 UTF-8 重定向输出不崩（先证明不修必崩） | `tests/test_cli_encoding.py::test_configure_stdio_survives_non_utf8_stdout` | ✅ |
+| 不支持 `reconfigure` 的流也不抛错 | `tests/test_cli_encoding.py::test_configure_stdio_handles_streams_without_reconfigure` | ✅ |
 | 跨会话记忆恢复 | `tests/test_memory_store.py` + `tests/test_runtime_engine.py` | ✅（评测用例样本待 S7 扩到 30～40 条） |
 
 ---
@@ -1394,8 +1399,10 @@ v2 只建立在 `first-agent/`。
 
 > 实现进度（截至本文档 v0.4）：**Phase 0 ✅ / Phase 1 🟡 / Phase 2 ✅ / Phase 3a ✅ / Phase 3b ✅ / Phase 4 ✅ / Phase 5 ✅**
 >
-> 实际执行被拆成 S0～S9 若干小步，每步一个 commit + 一次全量测试。**S9 是复查补漏**：
-> 10.1/10.3 的摘要生成一直未接线（README 却写成「三层记忆」），故补齐实现并修掉窗口双重裁剪（R20）。
+> 实际执行被拆成 S0～S10 若干小步，每步一个 commit + 一次全量测试。**S9/S10 都是复查补漏**：
+> S9 发现 10.1/10.3 的摘要生成一直未接线（README 却写成「三层记忆」），故补齐实现并修掉窗口
+> 双重裁剪（R20）；S10 落地 `--repeat` 与 `Run-to-run Consistency`（R21），真实跑 6 次填上
+> 「设计要求跑 3 次但没有数字」的空缺，并修掉 Windows 重定向输出的编码崩溃（R22）。
 > 其中 **S2「护栏提前」** 把 Phase 4
 > 的测试骨架（ScriptedLLM / Fake provider / runner / metrics / 回归门禁）提前实现，理由：没有护栏
 > 就不该继续往深里写。这修正了原计划「评测放在最后」的内部矛盾。

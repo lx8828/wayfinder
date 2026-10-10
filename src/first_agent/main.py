@@ -65,7 +65,35 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_stdio() -> None:
+    """让中文与 ``✅ / ✗ / ⚠`` 一类的符号在任何控制台/重定向下都不崩。
+
+    Windows 上 stdout 被**重定向或管道**时，Python 会用 ANSI 代码页（简中为 ``gbk``），
+    打印 ``✅``/``✗`` 会直接 ``UnicodeEncodeError``：``first-agent eval | Select-String``
+    或 ``first-agent eval > out.txt`` 就中招（交互式控制台走 Windows 控制台 API，反而不受影响，
+    所以这个坑只在重定向时出现）。处理方式：
+
+    - **非交互**（文件 / 管道）→ 切成 UTF-8：与仓库里所有产物（`diff.md`、JSON）一致，
+      重定向出来就是正确的 UTF-8 文件；
+    - **交互式控制台** → 只把 ``errors`` 设为 ``replace``，保留控制台自身编码，
+      中文照常显示，遇到底层不支持的符号降级为 ``?`` 而不是抛异常。
+    """
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:  # 例如被测试框架替换成不支持 reconfigure 的对象
+            continue
+        try:
+            if getattr(stream, "isatty", None) and stream.isatty():
+                reconfigure(errors="replace")
+            else:
+                reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):  # pragma: no cover - 平台相关
+            pass
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _configure_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
 

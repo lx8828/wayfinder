@@ -169,7 +169,8 @@ ToolAgentRuntime（组合根）            │
 | 去掉工具调用前的预算检查 | 3 条预算用例失败 |
 
 产物落在 `src/first_agent/evals/`：`baseline.json`（离线基线）、`current.json`、`diff.md`
-（真 LLM 段为 `*_live.*`），并随结果记录 **git commit / model / prompt version /
+（真 LLM 段为 `*_live.*`），`--repeat N` 另写 `repeats{suffix}.json`（每轮指标、波动、
+跨轮一致率、不稳定用例、每轮裁判分数）；并随结果记录 **git commit / model / prompt version /
 tool schema version / case set hash**，可回答「这次指标变化对应哪次改动」。
 `--update-baseline` 会**拒绝**把失败结果写为基线。
 
@@ -186,6 +187,22 @@ tool schema version / case set hash**，可回答「这次指标变化对应哪�
 | `first-agent trace stats [--dir DIR] [--json]` / `trace tail [--n N]` | Trace 聚合统计 / 最近事件 |
 
 `memory` / `trace` 只做读取与统计，数据层在 `core/inspect.py`（可直接单测），CLI 只负责打印。
+
+---
+
+## Windows 注意（输出编码）
+
+`first-agent eval > report.txt` 或 `first-agent eval | Select-String ...` 时，Python 的 stdout 会从
+"Windows 控制台 API" 退化为 **ANSI 代码页**（简中为 `gbk`），此时打印 `✅ / ✗ / ⚠ / ✓`
+会直接 `UnicodeEncodeError`：**命令 exit 1、输出文件全空**。CLI 启动时用 `_configure_stdio()` 处理：
+
+- **重定向 / 管道输出** → 切成 UTF-8（与 `diff.md`、JSON 产物一致），重定向出来就是正确的 UTF-8 文件；
+- **交互式控制台** → 保留控制台自身编码，只把 `errors` 设为 `replace`，中文照常显示，
+  底层不支持的符号降级为 `?` 而不是抛异常；
+- 想让控制台也按 UTF-8 显示（例如看清 `✅/✗`），可设 `PYTHONUTF8=1` 或先执行 `chcp 65001`。
+
+回归测试：`tests/test_cli_encoding.py` —— 先用 `PYTHONIOENCODING=gbk` **证明"不修必崩"**，
+再验证修复后的行为（这个"前提测试"保证该测试不会变成永远假装通过的空测试）。
 
 ---
 
@@ -230,6 +247,8 @@ uv run first-agent eval --quiet   # 离线评测门禁，无 API Key
 - 每个里程碑一个 commit，改完跑一次全量测试 + 一次评测门禁。
 - 关键保护逻辑都用**变异测试**验证过"测试真的会红"（预算熔断、`$steps` 解析、记忆裁决映射）。
 - 所有外部 IO 都能注入 Fake：不联网、不需要 Key 也能覆盖失败/超时/空结果/降级路径。
+- Windows 重定向输出的编码崩溃由 `tests/test_cli_encoding.py` 钉住（含"不修必崩"的前提测试）；
+  真 LLM 的稳定性由 `first-agent eval --real --repeat 3` 量化，不靠单次运气值。
 
 ---
 
@@ -261,9 +280,9 @@ src/first_agent/
 ├── tools/       # registry.py、executor.py、builtin/（工具定义，不含网络实现）
 ├── providers/   # 真实与 Fake 外部 IO（天气 / 时间解析 / 日程 / 出行耗时）
 ├── memory/      # extractor / adjudicator / service / summarizer / store / migrate
-├── evals/       # cases.jsonl、offline.py、live.py、suite.py、judge.py、baseline.json
+├── evals/       # cases.jsonl、judge_cases.jsonl、offline/live/suite/judge.py、baseline*/current*/diff*/repeats_live.json
 └── main.py      # CLI：chat / eval / memory / trace
-tests/           # 397 个离线测试
+tests/           # 410+ 个离线测试
 archive/         # v1 归档快照（独立 venv，可单独运行）
 docs/design.md   # 设计文档（含 R1–R18 实现偏差登记与里程碑）
 ```
