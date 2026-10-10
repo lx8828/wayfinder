@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from first_agent.providers import (
     FakeCalendarProvider,
     FakeTravelProvider,
@@ -110,22 +112,66 @@ def test_travel_tool_schema_declares_mode_enum():
         "subway",
         "car",
         "taxi",
+        "train",
     ]
 
 
-def test_travel_tool_rejects_mode_outside_the_enum():
-    """真实运行里模型传了 ``driving``，provider 抛 not_found——看起来像"查不到路线"，
-    实际是契约违例。现在必须变成显式的 ``invalid_arguments``，并告诉模型合法取值。
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("driving", "car"),
+        ("驾车", "car"),
+        ("开车", "car"),
+        ("打车", "taxi"),
+        ("高铁", "train"),
+        ("地铁", "subway"),
+        ("步行", "walk"),
+        ("高铁  ", "train"),
+    ],
+)
+def test_travel_tool_normalizes_common_mode_aliases(raw, expected):
+    """模型不会只用枚举里的英文：别名要在契约层归一化，而不是让 provider 报 not_found。"""
+
+    provider = FakeTravelProvider()
+    result = run_tool(
+        make_travel_time_tool(provider),
+        {"origin": "重庆", "destination": "成都", "mode": raw},
+    )
+
+    assert result.ok is True
+    assert result.data["mode"] == expected
+    # provider 收到的是规范值（不是别名）
+    assert provider.calls[-1][2] == expected
+
+
+def test_tool_mode_enum_matches_provider_supported_modes():
+    """工具契约的枚举与 provider 的支持集必须一致。
+
+    这次就是这个坑：给工具加了 ``train`` 却忘了给 provider 加，
+    于是「合法的方式」在 provider 层变成 ``not_found``（看起来像查不到路线）。
     """
+
+    from typing import get_args
+
+    from first_agent.providers.travel import MODE_SPEED_KMH
+    from first_agent.tools.builtin.travel import TravelMode
+
+    assert set(get_args(TravelMode)) == set(MODE_SPEED_KMH)
+
+
+def test_travel_tool_rejects_unknown_mode_with_legal_values():
+    """无法识别的方式要给出**明确可选值**，而不是含糊的 not_found。"""
 
     result = run_tool(
         make_travel_time_tool(FakeTravelProvider()),
-        {"origin": "重庆", "destination": "成都", "mode": "driving"},
+        {"origin": "重庆", "destination": "成都", "mode": "rocket"},
     )
 
     assert result.ok is False
     assert result.error_code == "invalid_arguments"
-    assert "car" in (result.error_message or "")
+    message = result.error_message or ""
+    assert "rocket" in message
+    assert "car" in message and "train" in message
 
 
 def test_travel_tool_accepts_declared_mode():

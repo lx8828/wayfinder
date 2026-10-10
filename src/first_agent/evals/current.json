@@ -2,12 +2,12 @@
   "metadata": {
     "case_count": 36,
     "case_set_hash": "d70b65d8e944",
-    "generated_at": "2026-10-10T14:20:35+00:00",
-    "git_commit": "137aad6",
+    "generated_at": "2026-10-10T14:42:50+00:00",
+    "git_commit": "8b18b73",
     "mode": "offline",
     "model": "scripted+fake",
-    "prompt_version": "f61d6c635cb9",
-    "tool_schema_version": "566dd76b7002"
+    "prompt_version": "5d942838aae5",
+    "tool_schema_version": "42292703d006"
   },
   "metrics": {
     "Argument Accuracy": 100.0,

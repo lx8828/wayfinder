@@ -4,7 +4,7 @@
 - 仓库：`first-agent`（本文档位于 `docs/design.md`，随代码一同版本化）
 - 版本：v0.4
 - 日期：2026-10-10
-- 状态：Proposed（S0–S13 已实现，见 0.1）
+- 状态：Proposed（S0–S14 已实现，见 0.1）
 - 术语：本文档版本为 v0.4；产品目标版本称 **v2**；旧手写实现称 **v1**（归入 `archive/handwritten_v1/`）
 - 目标：围绕 Agent 编排、原生工具调用、短期/长期记忆和离线评测，把项目二从功能 Demo 升级为可测试、可观测、可回归的 Agent Runtime
 
@@ -76,6 +76,9 @@
 | R18 | LLM-as-Judge 必须同时看到**工具观测数据** | 不给观测，裁判会把回答里的真实数值误判为「编造事实」（首次真实运行实测） | 16.3 |
 | R19 | `TRACE_MODE` / `FIRST_AGENT_TRACE_DIR` 真正接入 CLI；新增 `core/inspect.py` 承载 `memory` / `trace` 的数据层 | 前两个环境变量文档写了但代码从未读取（文档与实现不符）；运维视图放在 CLI 里无法单测 | 15 / 5 |
 | R21 | 新增 `--repeat N` 并落地 `Run-to-run Consistency`（结论 + 工具序列两个口径）；硬失败按「任意一轮失败」去重 | 设计 14.4 要求「真 LLM 跑 3 次观察稳定性」，但此前只能靠人工看日志；单轮数字无法区分「模型不稳」和「测试不稳」 | 14.4 / 16.5 |
+| R26 | **规划前置校验**：工具输入字段声明 `slot_bindings`；步骤里出现"不在已知信息中的地点"或"我家/公司"这类相对说法 → 转 `need_info` 追问，**不执行任何工具**；既无步骤又无 `need_info` 的空计划计为结构缺陷 | 真跑中规划器会给缺失的槽位编一个值硬跑（不知道城市就填"北京"、拿"我家"当出发地），工具照样返回"正常"结果——**用户拿到的是编造的答案**。追问是唯一诚实的处理 | 8.2 |
+| R27 | 复合意图：Planner Prompt 要求「和/并且/同时/顺便/、」分隔的每个需求都映射到至少一个工具步骤；另有**覆盖度启发式**只触发一次修复性重规划，重规划后仍不达标也照常执行 | `need_info` 的字段名是**结构化契约**，Prompt 必须给出规范词表（否则模型自造 `city`，`pending_slots` 与断言都对不上）；而覆盖度只是字数启发式，**不能用它否决一个结构合法的计划** | 8.2 |
+| R28 | 工具方式契约：`mode` 是枚举（含 `train`），中英文别名（驾车/打车/高铁/driving…）在**工具契约层**归一化；provider 支持集必须与枚举一致（由一致性测试钉住） | "只在描述里列举取值"等于没要求：模型传 `driving` → provider 抛 `not_found`（像"查不到路线"，实为契约违例）。别名归一化让"说法不同"不再等于失败；枚举与 provider 不一致则会出现"合法方式反而查不到" | 11.5 |
 | R24 | 断言按**证据层**分层（`observation` / `need_info` / `tool_error` / `final_answer`），并新增 `any_of` 与 `regex`；失败报告必须指明**是哪一条**断言失败 | 原实现把事实断言全写在回答文本上（要求中文回答出现英文槽位名、要求固定文案），业务正确但换说法的回答被判失败——**度量的是措辞而不是能力**。分层后同一事实按"工具返回的数据"判定，措辞交给 judge | 16.2 / 16.3 |
 | R25 | 工具契约收紧：`estimate_travel_time.mode` 改枚举、`CalendarInput.date` 加 ISO 格式 `pattern` | 描述里写"walk/bike/…"等于没要求：真跑中模型传 `driving` → provider 抛 `not_found`（像"查不到路线"，实为契约违例）；日历收到非 ISO 日期 → 返回空列表 → 回答"你没有安排"，是**静默的错误答案**。收紧后变成显式 `invalid_arguments`，且 schema 会带上 `enum` / `pattern` 供模型遵循 | 11.5 / 16.2 |
 | R23 | 顺序类指标拆成四个互补维度：`Tool Set Accuracy`（召回）/ `Precedence Accuracy`（关键先后）/ `Plan Validity Rate`（计划合法性四要素）/ `Plan Success Rate`（端到端）；用例新增 `precedence` 字段 | 只用「序列完全相等」无法归因：**合法换序**与**语义顺序错误**被记成同一类失败。真 LLM 实测证明这不是理论问题：`Tool Set` 91.67 而 `Tool Sequence` 66.67，约 25pt 的"序列错误"其实是合法换序 | 16.2 / 16.6 |
@@ -298,7 +301,7 @@ src/first_agent/
 │   └── repeats_live.json  # ✅ 真 LLM 每轮明细与一致性（--repeat，S10）
 └── main.py                # ✅ CLI（chat / eval / memory / trace）
 
-tests/                     # ✅ 466 个离线测试（无 API Key 可跑）
+tests/                     # ✅ 485 个离线测试（无 API Key 可跑）
 var/                       # ✅ 本地 SQLite 与 Trace（已 gitignore）
 
 .env.example               # ✅ 环境变量示例（不含密钥）
@@ -581,6 +584,26 @@ class Plan(BaseModel):
 - 降级成功时**清空 `error`**：否则一次成功的降级会被评测判成失败。
 - 工具层的 retry 仍由 `ToolExecutor` 负责（瞬时错误重试、非瞬时错误不重试），
   Plan 层不重复实现重试。
+
+实现补充（S14，三条任务成功率改进）：
+
+- **规划前置校验（R26，确定性）**：校验通过后、执行之前，检查每个工具的**必填**参数：
+  若该参数声明了 `slot_bindings`（如 `get_weather.city → destination`），其取值必须是
+  「本轮输入 + 已知用户信息 + 已填槽位」里出现过的值；`我家/公司/这里` 这类**相对说法**
+  一律视为"槽位未补全"。命中即转 `need_info` 追问（回答里说中文槽位名，
+  `need_info` 字段保留规范名），**一个工具都不执行**。
+  - 只查**地点**：日期是可推导的（`resolve_datetime`/日期运算），把"日期没在输入里出现"
+    当编造会误拦正确计划（真跑中确实误拦过），日期格式改由工具的 `pattern` 兜底。
+  - 只查**必填**参数：有默认值的参数允许模型用默认值。
+  - `need_info` 里的自造词（`city`/`目的地`/`出发地点`…）按 `SLOT_SYNONYMS` 归一化到
+    规范槽位，保证 `WorkingState.pending_slots` 与评测断言拿到的是一套词汇。
+- **空计划是缺陷**（R26 附带）：既没有步骤也没有 `need_info` 的计划计为 `empty_plan`
+  结构问题 → 走一次重规划；否则会"零观测直接汇总"，产出静默的空洞回答（真跑中出现过）。
+- **复合意图（R27）**：Prompt 增加第 8 条规则；另有 `detect_coverage_gap()` 用连接词数量
+  估计需求数，**只用来触发一次修复性重规划**，重规划后仍不达标则照常执行
+  （启发式不否决结构合法的计划，避免把一次正确的回答判成失败）。
+- **出行方式（R28）**：`TravelMode` 枚举 + `MODE_ALIASES` 在契约层归一化；
+  `MODE_SPEED_KMH` 必须与枚举一致（`test_tool_mode_enum_matches_provider_supported_modes`）。
 
 ### 8.3 多轮追问
 
@@ -1383,6 +1406,18 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 | 出行方式必须落在枚举内 | `tests/test_builtin_tools.py::test_travel_tool_rejects_mode_outside_the_enum` | ✅ |
 | 枚举写进工具 schema | `tests/test_builtin_tools.py::test_travel_tool_schema_declares_mode_enum` | ✅ |
 | 非 ISO 日期被显式拒绝 | `tests/test_builtin_tools.py::test_calendar_tool_rejects_non_iso_date` | ✅ |
+| 计划用了输入里没有的城市 → 追问不执行 | `tests/test_plan_readiness.py::test_plan_with_invented_city_asks_instead_of_executing` | ✅ |
+| 「我家」这类相对地点 → 追问出发地 | `tests/test_plan_readiness.py::test_relative_place_is_treated_as_missing_slot` | ✅ |
+| 来自记忆/槽位的值不算编造 | `tests/test_plan_readiness.py::test_value_from_memory_is_not_treated_as_invented` | ✅ |
+| 可推导的日期不被误拦 | `tests/test_plan_readiness.py::test_derivable_date_is_not_treated_as_invented` | ✅ |
+| 可选参数不参与缺槽位判定 | `tests/test_plan_readiness.py::test_optional_arguments_are_not_slot_checked` | ✅ |
+| `need_info` 自造词归一化到规范槽位 | `tests/test_plan_readiness.py::test_need_info_synonyms_are_normalized_to_canonical_slots` | ✅ |
+| 复合意图触发一次修复性重规划 | `tests/test_plan_readiness.py::test_composite_intent_triggers_one_repair_replan` | ✅ |
+| 覆盖度启发式不否决合法计划 | `tests/test_plan_readiness.py::test_coverage_gap_never_blocks_a_structurally_valid_plan` | ✅ |
+| 空计划先重规划、仍空则不算成功 | `tests/test_plan_readiness.py::test_empty_plan_is_repaired_by_replan` / `..._does_not_claim_success` | ✅ |
+| 出行方式别名归一化（驾车/打车/高铁…） | `tests/test_builtin_tools.py::test_travel_tool_normalizes_common_mode_aliases` | ✅ |
+| 无法识别的方式给出可选值 | `tests/test_builtin_tools.py::test_travel_tool_rejects_unknown_mode_with_legal_values` | ✅ |
+| 工具枚举与 provider 支持集一致 | `tests/test_builtin_tools.py::test_tool_mode_enum_matches_provider_supported_modes` | ✅ |
 | 非 UTF-8 重定向输出不崩（先证明不修必崩） | `tests/test_cli_encoding.py::test_configure_stdio_survives_non_utf8_stdout` | ✅ |
 | 不支持 `reconfigure` 的流也不抛错 | `tests/test_cli_encoding.py::test_configure_stdio_handles_streams_without_reconfigure` | ✅ |
 | 跨会话记忆恢复 | `tests/test_memory_store.py` + `tests/test_runtime_engine.py` | ✅（评测用例样本待 S7 扩到 30～40 条） |
@@ -1466,6 +1501,9 @@ v2 只建立在 `first-agent/`。
 > 拆出来（R23），真实数据证明拆分有效。
 > S13 把断言从「回答措辞」重写到**证据层**并加失败断言诊断（R24），
 > 顺带用新尺子暴露并修掉两个工具契约缺陷（R25）。
+> S14 针对任务成功率做三件事：规划前置校验（缺槽位先追问，R26）、复合意图覆盖（R27）、
+> 出行方式契约与别名（R28）。真实 3 轮：`Plan Success Rate` 23.81 → **42.86**、
+> `Assertion Pass Rate` 58.89 → **71.11**、`Extra Tool Call Rate` 7.79 → **0.93**。
 > 之前的**S9/S10/S11 也是复查补漏**：
 > S9 发现 10.1/10.3 的摘要生成一直未接线（README 却写成「三层记忆」），故补齐实现并修掉窗口
 > 双重裁剪（R20）；S10 落地 `--repeat` 与 `Run-to-run Consistency`（R21），真实跑 6 次填上
@@ -1634,6 +1672,32 @@ LLM-as-Judge（`--judge`）、元数据落盘（commit / model / prompt / tool s
    以及**契约给了可恢复错误却不重试**（`016`/`018` 收到 `invalid_arguments` 后未改 `mode`）。
    结论：这项指标低**主要是模型行为问题**，但原来的尺子无法区分「措辞不同」与「事实没到位」——
    现在失败报告会写明 `observation:contains(项目评审会)` 这类具体断言，可逐条归因。
+
+7. **（S14 任务成功率）三条改进的净效果**（真实 3 轮，均值）：
+
+   | 指标 | 改进前 | 改进后 |
+   |---|---:|---:|
+   | Plan Success Rate | 23.81 | **42.86**（±14.29） |
+   | Assertion Pass Rate | 58.89 | **71.11**（±3.33） |
+   | Plan Validity Rate | 59.52 | 66.67（±7.14） |
+   | Tool Sequence Accuracy | 62.22 | 71.11 |
+   | Tool Selection Accuracy | 90.48 | 98.41 |
+   | Argument Accuracy | 87.72 | 92.98 |
+   | Extra Tool Call Rate | 7.79 | **0.93** |
+   | Precedence Accuracy | 54.17（±37.5） | 62.50（±0） |
+   | Memory Decision Accuracy | 79.63 | 83.34 |
+   | 工具序列一致率 | 69.44 | 88.89 |
+
+   逐条归因（用失败诊断核对，不是"数字变好就行"）：
+   - 已修好：`plan_chain_travel_016/018` 的 `invalid_arguments` / `not_found` **整轮归零**
+     （方式别名生效）；`plan_need_info_city_020` 从"自造 `need_info` 词"变成正确追问；
+     `plan_double_calendar_013` 从"零工具调用"变成真的查了日期与日程。
+   - **我自己的新规则也误拦过一次**：日期按"是否出现在输入里"判定是错的（模型自己算出
+     `2026-10-11` 属正确行为）→ 收窄为只查地点。这轮误拦是靠真实运行发现的，
+     单测不会暴露——这也是"离线段是门禁、真 LLM 段是诊断"的价值。
+   - 仍失败且属真实问题：模型对「现在几点？」这种无需信息的请求仍可能声明 `need_info`；
+     少数用例的 `need_info` 用了词表外说法；旅行类轮次把出发地记成 `home_city`（记忆精度）。
+   - `Plan Success Rate` 摆动 ±14.29，**读均值必须连摆动一起读**。
 
 另外，真实段每轮有 17～20/36 条用例未通过。**必须分类归因，不能都算模型差**：
 夹具/断言写死了理想模型的措辞（追问用例期望出现 slot 名 `destination`，真模型用中文回答）、

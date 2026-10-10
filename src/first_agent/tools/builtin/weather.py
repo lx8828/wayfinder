@@ -53,4 +53,6 @@ def make_weather_tool(
         handler=handler,
         timeout_s=5.0,
         max_retries=1,
+        # 城市对应「目的地」槽位：Plan 前置校验据此判断规划器是否在**猜城市**
+        slot_bindings={"city": "destination", "date": "date"},
     )

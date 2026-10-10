@@ -49,6 +49,195 @@ class PlanExecutionError(RuntimeError):
 class PlanProblem:
     kind: str
     detail: str
+    # 缺槽位类问题记录对应槽位名，便于直接转成 need_info 追问
+    slot: str | None = None
+
+
+# 相对地点：用户说「我家 / 公司」这类**指代性**表述时，必须先问清具体地点。
+# 直接拿它们去查等于用假参数打外部服务（provider 解析不了，只会回 not_found）。
+RELATIVE_PLACE_TOKENS: tuple[str, ...] = (
+    "我家",
+    "家里",
+    "家附近",
+    "我家附近",
+    "这儿",
+    "这里",
+    "这边",
+    "那儿",
+    "那里",
+    "那边",
+    "公司",
+    "单位",
+    "学校",
+    "某地",
+    "未知",
+    "待定",
+    "不详",
+)
+
+# 只对「地点类」槽位做相对地点判定
+_PLACE_SLOTS = frozenset({"origin", "destination"})
+
+# 复合意图的连接词：出现即认为用户提了多个独立需求（供覆盖度启发式使用）
+CONJUNCTION_MARKERS: tuple[str, ...] = (
+    "和",
+    "与",
+    "并且",
+    "同时",
+    "顺便",
+    "还有",
+    "另外",
+    "分别",
+    "以及",
+    "、",
+)
+
+# 面向用户的槽位中文名（回答里不能出现英文 slot 名，见 R24）
+SLOT_LABELS: dict[str, str] = {
+    "origin": "出发地",
+    "destination": "目的地",
+    "date": "日期",
+    "purpose": "出行目的",
+    "transport_mode": "出行方式",
+}
+
+
+def slot_labels(slots: Sequence[str]) -> str:
+    return "、".join(SLOT_LABELS.get(name, name) for name in slots)
+
+
+# 规划器可能用同义名描述缺失信息（city / 城市 / 出发地…）。need_info 是**结构化契约**，
+# 必须落到规范槽位名：否则 WorkingState.pending_slots 与评测断言都会拿到模型自造的词
+# （真跑中出现过 need_info=["city"]，导致结构化字段对不上）。
+SLOT_SYNONYMS: dict[str, str] = {
+    "city": "destination",
+    "城市": "destination",
+    "目的地": "destination",
+    "地点": "destination",
+    "location": "destination",
+    "出发地": "origin",
+    "出发地点": "origin",
+    "出发位置": "origin",
+    "起点": "origin",
+    "from": "origin",
+    "start": "origin",
+    "目的地城市": "destination",
+    "目标城市": "destination",
+    "日期": "date",
+    "具体日期": "date",
+    "哪一天": "date",
+    "具体时间": "date",
+    "date_time": "date",
+    "when": "date",
+    "出行方式": "transport_mode",
+    "交通方式": "transport_mode",
+    "mode": "transport_mode",
+    "目的": "purpose",
+    "intent": "purpose",
+}
+
+
+def normalize_slots(names: Sequence[str]) -> list[str]:
+    """把模型自造的槽位名归一化到规范槽位；未知名字原样保留（便于暴露出问题）。"""
+
+    result: list[str] = []
+    for name in names:
+        key = str(name).strip()
+        canonical = SLOT_SYNONYMS.get(key) or SLOT_SYNONYMS.get(key.lower()) or key
+        if canonical not in result:
+            result.append(canonical)
+    return result
+
+
+def known_text(state: WorkingState, user_input: str, system_context: str = "") -> str:
+    """规划器**能看到的全部信息**拼成的文本，用于判断参数值是不是"凭空出现"的。"""
+
+    parts = [user_input, system_context]
+    parts.extend(str(getattr(state, name)) for name in SLOT_FIELDS if getattr(state, name))
+    return "\n".join(part for part in parts if part)
+
+
+def check_plan_readiness(
+    plan: Plan,
+    registry: ToolRegistry,
+    *,
+    state: WorkingState,
+    user_input: str,
+    context: str,
+) -> list[PlanProblem]:
+    """**规划前置校验**：步骤参数的取值必须是已知信息里出现过的（design 8.2 / R26）。
+
+    规划器最危险的失败不是"少了一步"，而是**编一个地点/日期硬跑**——工具会用假参数去查
+    真实服务，回一个看起来正常的结果。这条校验把「不要编造用户没说过的城市或日期」
+    从提示词里的自觉变成确定性拦截：
+
+    - 只查**必填**参数（有默认值的参数允许模型用默认值）
+    - 只查声明了 ``slot_bindings`` 的参数（说明该参数对应哪个槽位）
+    - 引用 ``$steps.<id>.<field>`` 的参数跳过（执行期才解析）
+    - 相对地点（我家 / 公司…）一律视为"槽位未补全"
+
+    命中即「缺槽位」：调用方应转成 ``need_info`` 追问，**而不是执行计划**。
+    """
+
+    problems: list[PlanProblem] = []
+    for step in plan.steps:
+        spec = registry.get(step.tool)
+        if spec is None or not spec.slot_bindings:
+            continue
+        for field_name, slot in spec.slot_bindings.items():
+            model_field = spec.input_model.model_fields.get(field_name)
+            if model_field is None or not model_field.is_required():
+                continue
+            value = step.arguments.get(field_name)
+            if value is None:
+                continue
+            try:
+                if parse_step_reference(value) is not None:
+                    continue
+            except ValueError:
+                continue  # 非法引用由 validate_plan 负责，这里不重复报告
+            text = str(value)
+            if slot not in _PLACE_SLOTS:
+                # 只查地点：**日期是可推导的**（resolve_datetime 或日期运算都能得到），
+                # 把"日期没在输入里出现"当成编造会误拦正确的计划（真跑中真的误拦过），
+                # 日期格式由日历工具的 pattern 兜底。
+                continue
+            if any(token in text for token in RELATIVE_PLACE_TOKENS):
+                problems.append(
+                    PlanProblem(
+                        "missing_slot",
+                        f"第 {step.id} 步 {field_name}={text!r} 是相对表述而非具体地点",
+                        slot,
+                    )
+                )
+                continue
+            if text not in known_text(state, user_input, context):
+                problems.append(
+                    PlanProblem(
+                        "missing_slot",
+                        f"第 {step.id} 步 {field_name}={text!r} 不在已知信息中（疑似编造）",
+                        slot,
+                    )
+                )
+    return problems
+
+
+def detect_coverage_gap(user_input: str, plan: Plan) -> PlanProblem | None:
+    """**覆盖度启发式**：用户提了多个独立需求时，步骤数不应少于需求数（R27）。
+
+    只在计划已声明要执行（有步骤、且没有 need_info）时才有意义。这**只是启发式**，
+    因此只用来触发一次修复性重规划，绝不用来否决计划：误判最多浪费一次规划调用，
+    不会把一次正确的回答判成失败。
+    """
+
+    if not plan.steps or plan.need_info:
+        return None
+    needs = 1 + sum(user_input.count(marker) for marker in CONJUNCTION_MARKERS)
+    if len(plan.steps) >= needs:
+        return None
+    return PlanProblem(
+        "coverage_gap", f"用户可能提出 {needs} 个独立需求，但计划只有 {len(plan.steps)} 步"
+    )
 
 
 def _detect_cycles(plan: Plan) -> list[PlanProblem]:
@@ -89,6 +278,11 @@ def validate_plan(plan: Plan, registry: ToolRegistry, *, max_steps: int) -> list
         problems.append(
             PlanProblem("too_many_steps", f"{len(plan.steps)} 步超过上限 {max_steps}")
         )
+
+    if not plan.steps and not plan.need_info:
+        # 既没有步骤也不追问 = 什么都不会发生。真实运行里出现过（模型给出空计划），
+        # 结果是拿着零观测去汇总 → 静默的空洞回答。必须当成结构缺陷处理。
+        problems.append(PlanProblem("empty_plan", "既没有执行步骤也没有 need_info"))
 
     known = plan.step_ids()
     by_id = {step.id: step for step in plan.steps}
@@ -236,11 +430,20 @@ PLANNER_TEMPLATE = """你是一个任务规划器，把用户的出行请求拆�
 
 规则：
 1. 只返回 JSON：{{"need_info": [], "reason": "", "steps": []}}
-2. 缺少完成任务必需的信息时（例如不知道目的地），把缺失字段放进 need_info，steps 留空。
+2. 缺少完成任务必需的信息时（例如不知道目的地），把缺失字段放进 need_info，steps 留空；
+   **不要用猜测值凑出一个"能跑"的计划**——参数值必须是真实已知的。
+   need_info 里只能用这些字段名：destination（目的地）/ origin（出发地）/ date（日期）/
+   purpose（出行目的）/ transport_mode（出行方式），不要自造名字。
 3. 每一步形如 {{"id": 0, "tool": "工具名", "arguments": {{}}, "depends_on": []}}。
 4. 参数需要引用前面步骤的结果时写 "$steps.<id>.<字段>"，并且**必须**把该 id 写进 depends_on。
 5. id 从 0 开始、不能重复；步骤总数不超过 {max_steps}。
 6. 不要编造用户没说过的城市或日期；能用「已知用户信息」的城市就优先用它。
+7. 参数值必须出现在「已知用户信息」「任务状态」或用户本轮输入里。任何一个要用的地点、
+   日期若不在其中，就把它放进 need_info 追问，不要自己编；「我家」「公司」这类相对说法
+   不是具体地点，同样要追问。
+8. 用户用「和 / 并且 / 同时 / 顺便 / 还有 / 另外 / 、」提出多个独立需求时，
+   **每个需求都必须映射到至少一个工具步骤**，不能只规划其中一部分。
+   例如"天气和日程允许吗"要同时计划查天气与查日程。
 
 示例（已知居住地重庆，用户说明天下午去公园）：
 {{"need_info": [], "reason": "先解析时间，再查对应日期天气",
@@ -373,10 +576,12 @@ class PlanExecuteEngine:
 
         # 3) 缺信息 → 追问，并把待补信息写进 Working State
         if plan.need_info:
-            state.pending_slots = list(plan.need_info)
+            slots = normalize_slots(plan.need_info)
+            state.pending_slots = slots
             result.status = "need_info"
-            result.need_info = list(plan.need_info)
-            result.answer = f"我还需要知道{'、'.join(plan.need_info)}，才能帮你判断。"
+            result.need_info = slots
+            # 面向用户说中文；结构化字段（need_info）里保留规范槽位名
+            result.answer = f"我还需要知道{slot_labels(slots)}，才能帮你判断。"
             # 计划结构自身是合法的（无步骤时 DAG 平凡成立），只是信息不全
             result.plan_valid = True
             return self._finish(result, started)
@@ -386,6 +591,18 @@ class PlanExecuteEngine:
         if problems:
             result.plan_problems = problems
             return self._handle_plan_failure(result, messages, state, defaults, budget, started)
+
+        # 4.5) **规划前置校验**：参数里出现「不在已知信息中」的值或相对地点 →
+        #      先追问缺的槽位，**不执行计划**（design 8.2 / R26）。
+        readiness = check_plan_readiness(
+            plan,
+            self.registry,
+            state=state,
+            user_input=user_input,
+            context=_system_context(messages),
+        )
+        if readiness:
+            return self._answer_need_info(result, state, readiness, started)
 
         # 校验通过 → 计划合法（后续执行是否成功是另一回事）
         result.plan_valid = True
@@ -536,15 +753,24 @@ class PlanExecuteEngine:
         )
 
         problems = validate_plan(plan, self.registry, max_steps=self.max_steps)
+        # 结构没问题时，再用**覆盖度启发式**看看复合意图有没有被漏掉（R27）。
+        # 它只触发一次修复性重规划，绝不单独否决计划。
         if not problems:
-            return plan, []
+            gap = detect_coverage_gap(user_input, plan)
+            if gap is None:
+                return plan, []
+            problems = [gap]
 
         self._trace("plan_invalid", attempt=1, problems=[item.detail for item in problems])
         replanned = self._replan(
             state, user_input, context=context, plan=plan, problems=problems
         )
+        # 拿不到更好的计划时：结构性缺陷仍然要降级，覆盖度问题则照原计划执行
+        structural = [item for item in problems if item.kind != "coverage_gap"]
         if replanned is None:
-            return plan, problems
+            if not structural:
+                self._trace("plan_coverage_gap_accepted", steps=len(plan.steps))
+            return plan, structural
 
         self._trace(
             "plan_regenerated",
@@ -556,7 +782,36 @@ class PlanExecuteEngine:
         if remaining:
             self._trace("plan_invalid", attempt=2, problems=[item.detail for item in remaining])
             return replanned, remaining
+        if detect_coverage_gap(user_input, replanned) is not None:
+            # 启发式不该否决一个结构合法的计划：记录后照常执行
+            self._trace("plan_coverage_gap_accepted", steps=len(replanned.steps))
         return replanned, []
+
+    def _answer_need_info(
+        self,
+        result: PlanResult,
+        state: WorkingState,
+        problems: Sequence[PlanProblem],
+        started: float,
+    ) -> PlanResult:
+        """**规划前置校验**拦下的计划 → 追问缺失槽位，不执行任何工具（R26）。
+
+        这些计划是被拦下来的（``plan_valid`` 保持 False），但结果是「向用户追问」——
+        比拿编造的参数去打外部服务强得多。
+        """
+
+        slots = list(dict.fromkeys(item.slot for item in problems if item.slot))
+        state.pending_slots = slots
+        result.status = "need_info"
+        result.need_info = slots
+        result.plan_problems = list(problems)
+        result.answer = f"我还需要知道{slot_labels(slots) or '更具体的信息'}，才能帮你判断。"
+        self._trace(
+            "plan_need_info_precheck",
+            slots=slots,
+            problems=[item.detail for item in problems],
+        )
+        return self._finish(result, started)
 
     def _replan(
         self,

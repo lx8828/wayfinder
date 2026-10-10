@@ -34,6 +34,8 @@ def make_calendar_tool(provider: CalendarProvider) -> ToolSpec:
         description="查询指定日期的日程安排",
         input_model=CalendarInput,
         output_model=CalendarResult,
+        # 日期对应「日期」槽位：缺日期时应先追问，而不是猜一个日期去查
+        slot_bindings={"date": "date"},
         handler=handler,
         timeout_s=5.0,
         max_retries=1,

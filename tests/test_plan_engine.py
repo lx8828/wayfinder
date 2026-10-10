@@ -52,7 +52,8 @@ def test_dependency_chain_resolves_reference_values():
         ]
     )
 
-    result = engine.run_messages(user_messages("明天出门合适吗"))
+    # 输入里必须出现「重庆」：规划前置校验不允许计划填一个凭空出现的城市（R26）
+    result = engine.run_messages(user_messages("明天在重庆出门合适吗"))
 
     assert result.status == "success"
     assert result.tool_calls == ["resolve_datetime", "get_weather"]
@@ -89,7 +90,7 @@ def test_execution_follows_topological_order_not_list_order():
         ]
     )
 
-    result = engine.run_messages(user_messages("明天天气"))
+    result = engine.run_messages(user_messages("明天重庆天气"))
 
     assert result.tool_calls == ["resolve_datetime", "get_weather"]
     assert [trace["id"] for trace in result.step_traces] == [0, 1]
@@ -118,7 +119,7 @@ def test_list_order_does_not_affect_the_result():
                 text("好了。"),
             ]
         )
-        return engine.run_messages(user_messages("明天天气和现在几点"))
+        return engine.run_messages(user_messages("明天重庆天气和现在几点"))
 
     forward = run_with(steps_forward)
     backward = run_with(steps_reversed)
@@ -188,11 +189,13 @@ def test_need_info_sets_pending_slots_and_asks():
     result = engine.run_messages(user_messages("我想去看电影"), working_state=state)
 
     assert result.status == "need_info"
-    assert result.need_info == ["目的地"]
+    # need_info 是结构化契约：模型写「目的地」也会归一化成规范槽位名
+    assert result.need_info == ["destination"]
+    # 而回答面向用户，用中文
     assert "目的地" in result.answer
     assert result.tool_calls == []
     # 状态被原地更新，供上层持久化
-    assert state.pending_slots == ["目的地"]
+    assert state.pending_slots == ["destination"]
     assert state.purpose == "看电影"
 
 
@@ -525,7 +528,7 @@ def test_plan_mode_persists_pending_slots_through_runtime():
 
     assert outcome.result.status == "need_info"
     state = runtime.sessions.load_working_state(outcome.ref)
-    assert state.pending_slots == ["目的地"]
+    assert state.pending_slots == ["destination"]  # 规范槽位名（跨轮持久化用）
     assert state.purpose == "看电影"
 
 

@@ -11,6 +11,8 @@ from typing import Any
 
 from first_agent.providers.base import ProviderNotFound
 
+# 支持的方式必须与工具契约的枚举**完全一致**（`TravelMode`）：加枚举忘了加这里，
+# 会让一个合法的出行方式在 provider 层变成 not_found —— 由一致性测试钉住。
 MODE_SPEED_KMH: dict[str, float] = {
     "walk": 5.0,
     "bike": 15.0,
@@ -18,6 +20,7 @@ MODE_SPEED_KMH: dict[str, float] = {
     "subway": 35.0,
     "car": 45.0,
     "taxi": 40.0,
+    "train": 90.0,
 }
 DEFAULT_DISTANCE_KM = 12.0
 

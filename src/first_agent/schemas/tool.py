@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field
@@ -97,6 +97,10 @@ class ToolSpec:
     timeout_s: float = 5.0
     max_retries: int = 1
     side_effect: bool = False
+    # 输入字段 → 工作状态槽位 的映射（如 {"city": "destination"}）。
+    # Plan 引擎据此做**规划前置校验**：必填参数的取值必须是已知信息里出现过的值，
+    # 否则说明规划器在猜（design 8.2 / R26）。
+    slot_bindings: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for field_name in ("input_model", "output_model"):
