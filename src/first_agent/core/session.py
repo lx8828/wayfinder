@@ -176,6 +176,33 @@ class SessionStore:
             messages.append({"role": "assistant", "content": row["assistant_output"]})
         return messages
 
+    def turns_between(self, ref: SessionRef, start: int, end: int) -> list[dict]:
+        """``[start, end]``（含端点）轮次的对话文本，旧→新；用于生成摘要（design 10.3）。
+
+        只取用户输入与助手回答：摘要不需要 tool observation 的原始细节，
+        把它们塞进摘要输入只会白占预算。
+        """
+
+        if end < start:
+            return []
+        rows = self.db.query(
+            """
+            SELECT turn_index, user_input, assistant_output
+            FROM turns
+            WHERE session_id = ? AND turn_index BETWEEN ? AND ?
+            ORDER BY turn_index ASC
+            """,
+            (ref.session_id, start, end),
+        )
+        return [
+            {
+                "turn_index": int(row["turn_index"]),
+                "user": row["user_input"],
+                "assistant": row["assistant_output"],
+            }
+            for row in rows
+        ]
+
     # -- 摘要 -------------------------------------------------------------
     def load_summary(self, ref: SessionRef) -> SessionSummary | None:
         row = self.db.query_one(

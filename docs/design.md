@@ -4,7 +4,7 @@
 - 仓库：`first-agent`（本文档位于 `docs/design.md`，随代码一同版本化）
 - 版本：v0.4
 - 日期：2026-10-10
-- 状态：Proposed（S0–S8 已实现，见 0.1）
+- 状态：Proposed（S0–S9 已实现，见 0.1）
 - 术语：本文档版本为 v0.4；产品目标版本称 **v2**；旧手写实现称 **v1**（归入 `archive/handwritten_v1/`）
 - 目标：围绕 Agent 编排、原生工具调用、短期/长期记忆和离线评测，把项目二从功能 Demo 升级为可测试、可观测、可回归的 Agent Runtime
 
@@ -75,6 +75,7 @@
 | R17 | 用例级新增「工具必须真的成功」判定（`tool_ok`） | 工具全挂但工具集合/参数恰好正确时，指标会假装一切正常（S7 首次运行就踩到：`invalid_output` 被 100% 的指标掩盖） | 16.2 |
 | R18 | LLM-as-Judge 必须同时看到**工具观测数据** | 不给观测，裁判会把回答里的真实数值误判为「编造事实」（首次真实运行实测） | 16.3 |
 | R19 | `TRACE_MODE` / `FIRST_AGENT_TRACE_DIR` 真正接入 CLI；新增 `core/inspect.py` 承载 `memory` / `trace` 的数据层 | 前两个环境变量文档写了但代码从未读取（文档与实现不符）；运维视图放在 CLI 里无法单测 | 15 / 5 |
+| R20 | 补齐**摘要生成**（`memory/summarizer.py`）并明确原文窗口策略 | 10.1/10.3 的摘要一直是「契约 + 表 + 读取路径就绪、写入未接线」，实际行为是"只留最近 8 轮、旧的静默丢弃"，与 README「三层记忆」的表述不符（由用户发现）；同时修掉引擎窗口与构建器窗口**双重裁剪**（引擎取 16 轮、构建器又砍回 8 轮） | 10.1 / 10.3 |
 
 **实测发现（真实冒烟，S3–S4）**：DeepSeek 在带 `tool_calls` 的响应里**有时输出 `content`（Thought）、有时不输出**——同一模型对同类问题先后返回 `content=null` 与 `content="I'll check the current weather in Beijing for you."`。这确认了方案 A（Thought 可选）是唯一稳妥的选择。另注意 **Thought 语言不受输入语言约束**（中文输入得到英文 Thought），如需统一只能在 prompt 中显式要求。
 
@@ -273,6 +274,7 @@ src/first_agent/
 │   ├── extractor.py       # ✅ 记忆抽取（LLM，别名规范化 + 逐条容错）
 │   ├── adjudicator.py     # ✅ 关系裁决（LLM，失败保守跳过）
 │   ├── service.py         # ✅ 三层编排（抽取 → 裁决 → 落库）
+│   ├── summarizer.py      # ✅ 会话摘要（短期记忆，S9）
 │   └── migrate.py         # ✅ v1 → v2 迁移（R9）
 ├── evals/
 │   ├── scripted.py        # ✅ ScriptedLLM
@@ -290,7 +292,7 @@ src/first_agent/
 │   └── current.json / diff.md        # ✅ 本次结果与对比
 └── main.py                # ✅ CLI（chat / eval / memory / trace）
 
-tests/                     # ✅ 397 个离线测试（无 API Key 可跑）
+tests/                     # ✅ 412 个离线测试（无 API Key 可跑）
 var/                       # ✅ 本地 SQLite 与 Trace（已 gitignore）
 
 .env.example               # ✅ 环境变量示例（不含密钥）
@@ -664,7 +666,18 @@ token 估算使用**字符数近似**（R1）：CJK 字符记 1 token、其他�
 
 两个轮次阈值的关系：空闲时保留全部原文；一旦未摘要轮次达到 `SUMMARY_TRIGGER_TOKENS` 或超过 16 轮，就把“早于最近 `RECENT_TURNS_KEEP` 轮”的部分压缩进 `SessionSummary`，最近 8 轮始终保留原文。即 8 是“保底原文窗口”，16 是“触发压缩的窗口”，两者不冲突。
 
-实现状态：S4 只落地「最近 N 轮窗口 + 字符预算裁剪」；**摘要生成（10.3 的 LLM 调用）尚未实现**，`summaries` 表已建好且读取路径已通，写入随记忆/评测阶段接入。
+实现状态：S4 落地「最近 N 轮窗口 + 字符预算裁剪」；**S9 补齐摘要生成**（`memory/summarizer.py`，见 10.3 的实现补充）。
+
+窗口策略（S9 明确）：本轮保留**多少轮原文**由摘要覆盖情况决定——
+
+```text
+摘要覆盖 >= 总轮数 - RECENT_TURNS_KEEP - 1  → 保留 RECENT_TURNS_KEEP 轮（保底窗口 8）
+否则（摘要缺失/未覆盖/失败）                 → 保留 min(总轮数, SUMMARY_TRIGGER_TURNS) 轮（最多 16）
+```
+
+第二种情况是**宁多勿丢**：摘要没跟上时若只留 8 轮，中间那些轮次既不在摘要里、也不在窗口里，
+等于静默丢失历史。核心不变量为 ``摘要覆盖 + 最近窗口 = 全部轮次``（由
+`tests/test_session_summary.py::test_summary_and_recent_window_cover_every_turn` 钉住）。
 
 ### 10.2 SessionSummary
 
@@ -685,6 +698,21 @@ class SessionSummary(BaseModel):
 - 摘要失败不阻塞当前回答，保留最近原始轮次并记录 Trace。
 - 摘要 LLM 调用必须记录 latency 和 usage。
 - 摘要幂等键为 `session_id + covered_through_turn`。
+
+实现补充（S9）：
+
+- 落在 `memory/summarizer.py`（`SessionSummarizer`），与 extractor / adjudicator 同层；
+  阈值来自 `core.context`（`SUMMARY_TRIGGER_TURNS=16` / `SUMMARY_TRIGGER_TOKENS=16000`），
+  并可由 `SUMMARY_TRIGGER_TURNS` / `SUMMARY_TRIGGER_TOKENS` 环境变量覆盖（10.1 要求配置化）。
+- **只压缩**「已摘要范围之后、最近窗口之前」的轮次；`covered_through_turn` 推进到
+  `总轮数 - keep - 1`，因此每次压缩都是增量的（新摘要会带上旧摘要作为输入）。
+- 摘要输入只取用户输入与助手回答（不含 tool observation 原文），避免白占预算。
+- 失败（`JSONValidationError` / `LLMError` / 空摘要）→ **不写库、不抛错**，保留旧摘要，
+  Trace 记 `session_summary_failed`；门面另有 `_summarize` 兜底捕获任何异常。
+- 后置执行：仅在预算未耗尽时调用（否则记 `session_summary_skipped_budget`），
+  与本轮回答完全解耦。
+- 真实实测（17 轮会话，deepseek-chat）：`covered_through=8`、`source_tokens=343` →
+  `summary_tokens=105`（约 3.3× 压缩），摘要保住了偏好、工具结论与**未解决问题**。
 
 ---
 
@@ -1269,6 +1297,15 @@ Task Success Rate、Cross-session Memory Recall、Run-to-run Consistency、Avera
 | `memory list/show/rm` 可用 | `tests/test_cli_inspect.py::test_memory_show_and_rm_roundtrip` | ✅ |
 | `trace stats/tail` 可用 | `tests/test_cli_inspect.py::test_trace_stats_aggregates_runs_and_statuses` | ✅ |
 | Trace 读取容忍坏行 | `tests/test_cli_inspect.py::test_read_trace_events_skips_malformed_lines` | ✅ |
+| 摘要覆盖 + 最近窗口 = 全部轮次 | `tests/test_session_summary.py::test_summary_and_recent_window_cover_every_turn` | ✅ |
+| 未到阈值不产生任何 LLM 调用 | `tests/test_session_summary.py::test_below_trigger_keeps_all_turns_without_any_llm_call` | ✅ |
+| 摘要幂等（无新轮次不再调用） | `tests/test_session_summary.py::test_second_call_without_new_turns_is_idempotent` | ✅ |
+| 增量摘要合并旧摘要、只覆盖新轮次 | `tests/test_session_summary.py::test_incremental_summary_merges_previous_and_only_covers_new_turns` | ✅ |
+| 摘要失败保留旧摘要且不抛错 | `tests/test_session_summary.py::test_summary_failure_keeps_state_and_does_not_raise` | ✅ |
+| 摘要失败不影响本轮回答 | `tests/test_session_summary.py::test_summary_failure_does_not_block_the_answer` | ✅ |
+| 摘要注入上下文并按覆盖收窄窗口 | `tests/test_session_summary.py::test_window_narrows_when_summary_covers_earlier_turns` | ✅ |
+| 摘要落后时窗口回退到 16 轮 | `tests/test_session_summary.py::test_window_falls_back_to_trigger_when_summary_is_missing` | ✅ |
+| 预算耗尽跳过摘要 | `tests/test_session_summary.py::test_summary_is_skipped_when_budget_is_exhausted` | ✅ |
 | 跨会话记忆恢复 | `tests/test_memory_store.py` + `tests/test_runtime_engine.py` | ✅（评测用例样本待 S7 扩到 30～40 条） |
 
 ---
@@ -1345,7 +1382,9 @@ v2 只建立在 `first-agent/`。
 
 > 实现进度（截至本文档 v0.4）：**Phase 0 ✅ / Phase 1 🟡 / Phase 2 ✅ / Phase 3a ✅ / Phase 3b ✅ / Phase 4 ✅ / Phase 5 ✅**
 >
-> 实际执行被拆成 S0～S8 若干小步，每步一个 commit + 一次全量测试。其中 **S2「护栏提前」** 把 Phase 4
+> 实际执行被拆成 S0～S9 若干小步，每步一个 commit + 一次全量测试。**S9 是复查补漏**：
+> 10.1/10.3 的摘要生成一直未接线（README 却写成「三层记忆」），故补齐实现并修掉窗口双重裁剪（R20）。
+> 其中 **S2「护栏提前」** 把 Phase 4
 > 的测试骨架（ScriptedLLM / Fake provider / runner / metrics / 回归门禁）提前实现，理由：没有护栏
 > 就不该继续往深里写。这修正了原计划「评测放在最后」的内部矛盾。
 

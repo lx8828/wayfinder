@@ -21,6 +21,8 @@ from first_agent.core.context import (
     DEFAULT_SYSTEM_PROMPT,
     MAX_CONTEXT_TOKENS,
     RECENT_TURNS_KEEP,
+    SUMMARY_TRIGGER_TOKENS,
+    SUMMARY_TRIGGER_TURNS,
     ContextBuilder,
     ContextInputs,
     estimate_tokens,
@@ -52,6 +54,8 @@ __all__ = [
     "DEFAULT_SYSTEM_PROMPT",
     "MAX_CONTEXT_TOKENS",
     "RECENT_TURNS_KEEP",
+    "SUMMARY_TRIGGER_TURNS",
+    "SUMMARY_TRIGGER_TOKENS",
     "estimate_tokens",
     # db
     "Database",

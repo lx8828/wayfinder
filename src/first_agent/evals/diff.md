@@ -1,7 +1,7 @@
 # 评测对比（offline）
 
-- 生成时间：2026-10-10T12:24:16+00:00
-- git commit：b85865a
+- 生成时间：2026-10-10T13:01:28+00:00
+- git commit：cf99b00
 - model：scripted+fake
 - case set hash：6612a021f59b
 - prompt version：f61d6c635cb9

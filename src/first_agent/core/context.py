@@ -30,9 +30,31 @@ DEFAULT_SYSTEM_PROMPT = (
 MAX_CONTEXT_TOKENS = 24000
 OUTPUT_RESERVE_TOKENS = 4000
 RECENT_TURNS_KEEP = 8
+# 摘要触发阈值（design.md 10.1）：未摘要轮次超过 trigger_turns
+# 或估计 token 超过 trigger_tokens 时才压缩
+SUMMARY_TRIGGER_TURNS = 16
+SUMMARY_TRIGGER_TOKENS = 16000
 SAFETY_FACTOR = 1.2
 
 _CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def last_turns(messages: Sequence[dict], keep: int) -> list[dict]:
+    """按**轮**保留最后 ``keep`` 轮（以 ``user`` 消息为界）。
+
+    不能按**条数**裁剪：一条 assistant 消息后面可能跟着多条 tool 消息，
+    按条裁剪会把同一轮切碎，也会让「保留 N 轮」名不副实（例如 8 条 ≈ 4 轮）。
+    """
+
+    if keep <= 0:
+        return []
+    groups: list[list[dict]] = []
+    for message in messages:
+        if message.get("role") == "user" or not groups:
+            groups.append([message])
+        else:
+            groups[-1].append(message)
+    return [message for group in groups[-keep:] for message in group]
 
 
 def estimate_tokens(text: str, *, safety_factor: float = SAFETY_FACTOR) -> int:
@@ -58,6 +80,10 @@ class ContextInputs:
     working_state: WorkingState | None = None
     summary: SessionSummary | None = None
     recent_turns: Sequence[dict] = field(default_factory=tuple)
+    # 本轮的**有效原文窗口**（轮数）。装配层按摘要覆盖情况计算后传入；
+    # 为 None 时退回构建器自身的 recent_turns_keep。
+    # 两者必须由同一个来源决定，否则会出现「引擎取了 16 轮、构建器又砍到 8 轮」的双重裁剪。
+    recent_turns_limit: int | None = None
 
 
 class ContextBuilder:
@@ -92,7 +118,8 @@ class ContextBuilder:
             ),
         }
 
-        history = [dict(message) for message in inputs.recent_turns][-self.recent_turns_keep :]
+        limit = inputs.recent_turns_limit or self.recent_turns_keep
+        history = last_turns([dict(message) for message in inputs.recent_turns], limit)
         user_message = {"role": "user", "content": inputs.user_input}
 
         # 预算控制：从最旧的历史开始丢弃
@@ -130,7 +157,10 @@ class ContextBuilder:
                 sections.append("仍在等待用户补充：" + "、".join(working_state.pending_slots))
 
         if summary is not None and summary.summary:
-            sections.append("此前对话摘要：\n" + summary.summary)
+            sections.append(
+                f"此前对话摘要（已覆盖前 {summary.covered_through_turn + 1} 轮）：\n"
+                f"{summary.summary}"
+            )
 
         return "\n\n".join(sections)
 

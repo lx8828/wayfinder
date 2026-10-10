@@ -18,6 +18,7 @@
 | 多步编排 | `PlanStep` + `depends_on` + `$steps.<id>.<field>` 引用，三步校验 + 拓扑排序 | `tests/test_plan_validation.py`、`test_plan_engine.py` |
 | 长期记忆 | LLM **只判关系**（same/conflict/complementary/unsupported），`add/update/keep/skip` 由代码裁决 | `tests/test_memory_service.py` |
 | 会话隔离 | `SessionStore` + 首轮重建上下文；**不用全局单例** | `tests/test_runtime_memory_hook.py` |
+| 短期记忆 | 超过 16 轮未摘要即滚动压缩成 `SessionSummary`（覆盖 + 最近窗口 = 全部轮次，不丢历史） | `tests/test_session_summary.py` |
 | 预算与降级 | 60s 硬熔断；工具失败重试、依赖失败阻塞下游、Plan 失败**降级到 ReAct**、非法计划**只重规划一次** | `tests/test_budget_recovery.py` |
 | 契约化 | 每个工具**同时**声明输入与输出 Pydantic 模型，注册表统一生成 function-calling schema | `tests/test_tool_registry.py` |
 | 评测与回归 | 36 条用例 + 离线硬门禁 + 真 LLM 段 + LLM-as-Judge | `first-agent eval` |
@@ -28,7 +29,7 @@
 
 ```bash
 uv sync
-uv run pytest                # 397 个离线测试，不需要任何 API Key
+uv run pytest                # 410+ 个离线测试，不需要任何 API Key
 uv run first-agent eval      # 36 条用例 + 离线硬门禁，不需要任何 API Key
 
 cp .env.example .env         # 填 DEEPSEEK_API_KEY（天气需 QWEATHER_API_KEY）
@@ -89,6 +90,11 @@ ToolAgentRuntime（组合根）            │
 6. **失败必须走结构化降级路径**：工具瞬时错误重试一次；依赖失败的步骤标记
    `blocked_by_dependency` 并跳过下游而不是整体崩掉；Plan 生成失败或重规划后仍非法时
    **降级到 ReAct**，拿不到计划才退化为追问。
+7. **短期记忆会滚动压缩**：未摘要轮次超过 16 轮（或估计 token 超过 16000）时，把「早于最近 8 轮」
+   的对话压进 `SessionSummary`（幂等键 = `session_id + covered_through_turn`；失败保留旧摘要且不影响回答）。
+   窗口策略保证 `摘要覆盖 + 最近窗口 = 全部轮次`；摘要没跟上时窗口自动放宽到 16 轮——
+   宁可多带原文，也不要「既不在摘要、又不在窗口」的静默丢失。实测 17 轮会话压缩到 105 token
+   （源 343），摘要保住了偏好、工具结论与未解决问题。
 
 ---
 
@@ -115,7 +121,7 @@ ToolAgentRuntime（组合根）            │
 | 三工具依赖链 | 5 | | 无关问题不调用工具 | 3 |
 | 缺少参数追问 | 4 | | | |
 
-另有 `judge_cases.jsonl` 5 条**开放式**用例走 LLM-as-Judge（`--real --judge`），
+另有 `judge_cases.jsonl` 的 5 条开放式用例走 LLM-as-Judge（`--real --judge`），
 单独报告 `Task Success Rate`。
 
 ### 实测数字（本机一次运行）
@@ -191,7 +197,7 @@ tool schema version / case set hash**，可回答「这次指标变化对应哪�
 ## 质量保证
 
 ```bash
-uv run pytest -q                  # 397 个测试，全部离线（ScriptedLLM + Fake provider）
+uv run pytest -q                  # 410+ 个测试，全部离线（ScriptedLLM + Fake provider）
 uv run first-agent eval --quiet   # 离线评测门禁，无 API Key
 ```
 
@@ -213,7 +219,7 @@ uv run first-agent eval --quiet   # 离线评测门禁，无 API Key
   从结构上消除了旧实现「LLM 判 add 但代码不处理导致数据丢失」的缺陷。
 - 建立**两段式评测**（离线夹具硬门禁 + 真 LLM 波动指标）与方向化容差判定，
   并用变异测试证明门禁真能挡住回归；真 LLM 段量化出工具序列准确率 80.0%、平均延迟 1676.7ms。
-- 397 个测试全部离线可跑（注入 ScriptedLLM 与 Fake provider），覆盖失败、超时、
+- 410+ 个测试全部离线可跑（注入 ScriptedLLM 与 Fake provider），覆盖失败、超时、
   依赖阻塞、预算熔断与降级路径。
 
 ---
@@ -226,7 +232,7 @@ src/first_agent/
 ├── runtime/     # react.py（ReAct 循环）、plan_execute.py（DAG 编排）、slots.py
 ├── tools/       # registry.py、executor.py、builtin/（工具定义，不含网络实现）
 ├── providers/   # 真实与 Fake 外部 IO（天气 / 时间解析 / 日程 / 出行耗时）
-├── memory/      # extractor / adjudicator / service / store / migrate
+├── memory/      # extractor / adjudicator / service / summarizer / store / migrate
 ├── evals/       # cases.jsonl、offline.py、live.py、suite.py、judge.py、baseline.json
 └── main.py      # CLI：chat / eval / memory / trace
 tests/           # 397 个离线测试

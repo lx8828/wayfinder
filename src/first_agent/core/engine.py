@@ -16,7 +16,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from first_agent.core.budget import DEFAULT_BUDGET_MS, RunBudget
-from first_agent.core.context import RECENT_TURNS_KEEP, ContextBuilder, ContextInputs
+from first_agent.core.context import (
+    RECENT_TURNS_KEEP,
+    SUMMARY_TRIGGER_TURNS,
+    ContextBuilder,
+    ContextInputs,
+)
 from first_agent.core.session import SessionRef, SessionResolver, SessionStore
 from first_agent.memory.store import MemoryStore
 from first_agent.runtime.react import ReactResult
@@ -47,6 +52,9 @@ class ChatOutcome:
     memory_extraction_failed: bool = False
     # 本轮实际耗时（用于观察是否逼近预算上限）
     budget_spent_ms: int = 0
+    # 本轮结束后的后置摘要动作：nothing_to_do / below_threshold / summarized / failed
+    summary_action: str | None = None
+    summary_covered_through: int | None = None
 
 
 class ToolAgentRuntime:
@@ -66,6 +74,8 @@ class ToolAgentRuntime:
         clock: Callable[[], float] | None = None,
         tracer: Any = None,
         recent_turns_keep: int = RECENT_TURNS_KEEP,
+        summarizer: Any = None,
+        summary_trigger_turns: int = SUMMARY_TRIGGER_TURNS,
     ) -> None:
         self.engine = engine
         self.plan_engine = plan_engine
@@ -80,6 +90,8 @@ class ToolAgentRuntime:
         self.remember_after_turn = remember_after_turn
         self.tracer = tracer
         self.recent_turns_keep = recent_turns_keep
+        self.summarizer = summarizer
+        self.summary_trigger_turns = summary_trigger_turns
 
     # -- 对话 -------------------------------------------------------------
     def chat(
@@ -99,7 +111,8 @@ class ToolAgentRuntime:
         working_state = self.sessions.load_working_state(ref)
         profile = self.memories.profile(ref.user_id)
         summary = self.sessions.load_summary(ref)
-        history = self.sessions.recent_turns(ref, self.recent_turns_keep)
+        window = self._recent_window(ref, summary)
+        history = self.sessions.recent_turns(ref, window)
 
         messages = self.context_builder.build_messages(
             ContextInputs(
@@ -108,6 +121,7 @@ class ToolAgentRuntime:
                 working_state=working_state,
                 summary=summary,
                 recent_turns=history,
+                recent_turns_limit=window,
             )
         )
 
@@ -147,6 +161,9 @@ class ToolAgentRuntime:
                 ) = self._remember(user_input, ref.user_id)
             outcome.budget_spent_ms = budget.spent_ms
 
+        if self.summarizer is not None:
+            self._summarize(ref, outcome, budget)
+
         return outcome
 
     def _select_engine(self, mode: str | None) -> tuple[_Engine, str]:
@@ -158,6 +175,37 @@ class ToolAgentRuntime:
         if selected != "react":
             raise ValueError(f"未知对话模式：{mode!r}（仅支持 react / plan）")
         return self.engine, selected
+
+    def _recent_window(self, ref: SessionRef, summary: Any) -> int:
+        """本轮保留多少轮**原文**（design.md 10.1）。
+
+        - 摘要已覆盖到最近窗口之前 → 只保留 ``recent_turns_keep`` 轮（保底窗口）
+        - 摘要缺失或未覆盖（含摘要失败）→ 最多保留 ``summary_trigger_turns`` 轮
+
+        第二种情况是**宁多勿丢**：摘要没跟上时若只留 8 轮，中间那些轮次既不在摘要里、
+        也不在窗口里，等于静默丢失历史。
+        """
+
+        total = self.sessions.turn_count(ref)
+        keep = self.recent_turns_keep
+        covered = summary.covered_through_turn if summary is not None else -1
+        if covered >= total - keep - 1:
+            return keep
+        return max(keep, min(total, self.summary_trigger_turns))
+
+    def _summarize(self, ref: SessionRef, outcome: ChatOutcome, budget: RunBudget) -> None:
+        """后置摘要。**失败绝不影响本轮回答**（design.md 10.3）。"""
+
+        if budget.exhausted:
+            self._trace("session_summary_skipped_budget", spent_ms=budget.spent_ms)
+            return
+        try:
+            result = self.summarizer.maybe_summarize(ref)
+        except Exception as exc:  # noqa: BLE001 - 摘要是旁路，绝不冒泡
+            self._trace("session_summary_error", error=repr(exc))
+            return
+        outcome.summary_action = result.action
+        outcome.summary_covered_through = result.covered_through_turn
 
     @staticmethod
     def _engine_defaults(profile: Any, *, user_id: str | None = None) -> dict[str, Any]:

@@ -288,6 +288,21 @@ def test_judge_cases_are_loaded_and_have_criteria():
     assert len({case.case_id for case in cases}) == 5
 
 
+def test_readme_numbers_match_the_real_case_files():
+    """README 的可核对数字不能过期。
+
+    S9 的教训：文档声称「三层记忆」但摘要生成其实没接线。用例数量是能被机器核对的那部分，
+    所以由测试挡住「改了用例忘了改 README」。
+    """
+
+    readme = (JUDGE_CASES_PATH.parents[3] / "README.md").read_text(encoding="utf-8")
+    case_count = len(load_cases(CASES_PATH))
+    judge_count = len(judge_mod.load_judge_cases(JUDGE_CASES_PATH))
+
+    assert f"{case_count} 条用例" in readme
+    assert f"{judge_count} 条开放式用例" in readme
+
+
 def test_judge_cases_reject_duplicate_ids(tmp_path):
     path = tmp_path / "judge.jsonl"
     line = json.dumps({"case_id": "dup", "input": "x", "criteria": "c"})

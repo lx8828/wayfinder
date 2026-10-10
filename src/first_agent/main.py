@@ -90,12 +90,14 @@ def _run_chat(args: argparse.Namespace) -> int:
     from openai import OpenAI
 
     from first_agent.core.client import LLMClient
+    from first_agent.core.context import SUMMARY_TRIGGER_TOKENS, SUMMARY_TRIGGER_TURNS
     from first_agent.core.db import Database
     from first_agent.core.engine import ToolAgentRuntime
     from first_agent.core.session import SessionStore
     from first_agent.core.tracing import TraceLogger
     from first_agent.memory.service import MemoryService
     from first_agent.memory.store import MemoryStore
+    from first_agent.memory.summarizer import SessionSummarizer
     from first_agent.providers import (
         HeuristicTravelProvider,
         LlmDateTimeProvider,
@@ -149,14 +151,28 @@ def _run_chat(args: argparse.Namespace) -> int:
     db_path = Path(os.getenv("FIRST_AGENT_DB", "var/agent.db"))
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # 摘要阈值可配置（design 10.1「阈值必须配置化」）
+    summary_trigger_turns = int(os.getenv("SUMMARY_TRIGGER_TURNS", SUMMARY_TRIGGER_TURNS))
+    summary_trigger_tokens = int(os.getenv("SUMMARY_TRIGGER_TOKENS", SUMMARY_TRIGGER_TOKENS))
+
     with Database(db_path) as db:
+        sessions = SessionStore(db)
         memories = MemoryStore(db)
         runtime = ToolAgentRuntime(
             engine=ReactEngine(client, registry, tracer=tracer),
             plan_engine=PlanExecuteEngine(client, registry, tracer=tracer),
-            sessions=SessionStore(db),
+            sessions=sessions,
             memories=memories,
             memory_service=MemoryService(client, memories, tracer=tracer),
+            summarizer=SessionSummarizer(
+                client,
+                sessions,
+                trigger_turns=summary_trigger_turns,
+                trigger_tokens=summary_trigger_tokens,
+                tracer=tracer,
+            ),
+            # 窗口策略必须与摘要触发阈值一致，否则会出现「既不摘要也不保留」的缺口
+            summary_trigger_turns=summary_trigger_turns,
             budget_ms=args.budget_ms,
             tracer=tracer,
         )
@@ -178,10 +194,13 @@ def _run_chat(args: argparse.Namespace) -> int:
 
     print(result.answer)
 
-    if args.show_memory and outcome.memory_actions:
+    if args.show_memory and (outcome.memory_actions or outcome.summary_action):
         print("--- Memory ---")
         for key, action in outcome.memory_actions.items():
             print(f"  {key}: {action}")
+        if outcome.summary_action and outcome.summary_action != "nothing_to_do":
+            covered = outcome.summary_covered_through
+            print(f"  短期摘要: {outcome.summary_action}（覆盖到第 {covered} 轮）")
         print("--------------")
 
     tracer.end_run(
@@ -193,6 +212,8 @@ def _run_chat(args: argparse.Namespace) -> int:
         memory_actions=outcome.memory_actions,
         budget_spent_ms=outcome.budget_spent_ms,
         degraded_to=getattr(result, "degraded_to", None),
+        summary_action=outcome.summary_action,
+        summary_covered_through=outcome.summary_covered_through,
     )
     # need_info（追问）是正常结果，不是错误
     return 0 if result.status in {"success", "need_info"} else 1
